@@ -5,10 +5,6 @@
 byte triggerPin = 13;
 byte echoPin = 12;
 
-//mode, playlist = 0/volume = 1
-bool mode = 1;
-
-
 
 //define the pins for the two modes
 int ledSkip = 2;
@@ -24,7 +20,7 @@ int ledDown = 6;
 
 //timer for the mode switch cooldown
 unsigned long lastModeSwitch = 0;
-const int COOLDOWN_MS = 500;
+const int COOLDOWN_MS = 100;
 
 //stuff for making sure the previous value is stored
 const int NUM_READINGS = 3;
@@ -142,7 +138,7 @@ void loop () {
       digitalWrite(ledVolume, LOW);
       digitalWrite(ledPause, LOW);
     }
-    delay(250);
+    delay(50);
   }
    
   
