@@ -1,6 +1,6 @@
 # 🎵 SPARC
 
-<img width="1024" height="1024" alt="image" src="https://github.com/user-attachments/assets/f02faa9f-791d-47c3-955e-b05d2aab8c29" />
+<img width="800" height="800" alt="image" src="https://github.com/user-attachments/assets/f02faa9f-791d-47c3-955e-b05d2aab8c29" />
 
 A desk-mounted gesture controller that lets you control Spotify hands-free using nothing but hand movements in the air. Built with an Arduino Uno, an HC-SR04 ultrasonic distance sensor, and a Python backend — no touchscreen, no buttons, no phone.
 
