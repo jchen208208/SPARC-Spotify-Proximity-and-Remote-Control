@@ -20,7 +20,7 @@ const int ledUp = 5;
 const int ledDown = 6;
 
 //define threshold distance for detection of input gestures
-const int Thresh = 10;
+const int Thresh = 5;
 
 //stuff for making sure the previous value is stored
 const int NUM_READINGS = 3;
@@ -39,7 +39,7 @@ int currentMode = 0; // 0 = volume, 1 = skip, 2 = pause/play
 
 //refresh timer
 unsigned long lastReadTimeRefresh = 0;
-const int READ_INTERVAL = 50; // read every 50ms instead of blocking
+const int READ_INTERVAL = 25; // read every 50ms instead of blocking
 
 //constants for the zones
 const int NEAR_ZONE = 15;   // 2-15cm = skip mode
