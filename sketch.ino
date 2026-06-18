@@ -1,10 +1,8 @@
 #include <HCSR04.h>
 
-
 //define the pins for the sensor
 const byte triggerPin = 13;
 const byte echoPin = 12;
-
 
 //define the pins for the two modes
 const int ledSkip = 2;
@@ -32,18 +30,18 @@ unsigned long handEnteredTimePause = 0;
 bool handInRange = false;
 int currentMode = 0; // 0 = volume, 1 = skip, 2 = pause/play
 
+
+
 //refresh timer
 unsigned long lastReadTimeRefresh = 0;
 const int READ_INTERVAL = 50; // read every 50ms instead of blocking
 
 //constants for the zones
-const int NEAR_ZONE = 15;   // 2-15cm = skip mode
-const int FAR_ZONE = 30;    // 15-30cm = volume mode
+const int NEAR_ZONE = 50;   // 2-15cm = skip mode
+const int FAR_ZONE = 100;    // 15-30cm = volume mode
 const int HOLD_TIME = 2000; // 3 seconds in ms
 const int COOLDOWN_MS = 1000;
 unsigned long lastModeSwitch = 0;
-
-
 
 void setup () {
   Serial.begin(9600);
@@ -102,14 +100,14 @@ void loop () {
     digitalWrite(ledVolume, LOW);
     digitalWrite(ledUp, LOW);
     digitalWrite(ledDown, LOW);
-    digitalWrite(ledPause, LOW);
+    
       
 
     if (holdDurationOUT < HOLD_TIME) {
       // removed before 3 seconds = pause/play
       Serial.println("P");
-      digitalWrite(ledPause, HIGH);
-      //Serial.print(holdDurationOUT);
+      digitalWrite(ledPause, !digitalRead(ledPause));
+      
     }
 
     // if they held for 3+ seconds, mode was already set when timer expired
@@ -131,11 +129,8 @@ void loop () {
         //config led's
         digitalWrite(ledSkip, HIGH);
         digitalWrite(ledVolume, LOW);
+        digitalWrite(ledPause, LOW);
 
-        //Serial.println("MODE: Skip/Previous");
-        
-
-        
       } 
       else if (NEAR_ZONE < current < FAR_ZONE) {
         //set mode
@@ -144,21 +139,14 @@ void loop () {
         //config led's
         digitalWrite(ledVolume, HIGH);
         digitalWrite(ledSkip, LOW);
+        digitalWrite(ledPause, LOW);
 
-
-        //Serial.println("MODE: Volume");
-        
-
-       
-        
 
       }
       
       lastModeSwitch = millis();
       handEnteredTime = millis(); // reset so it doesnt keep triggering
     }
-
-    //if (millis() - lastModeSwitch < COOLDOWN_MS) return; // skip during cooldown
 
     if (currentMode == 1) {
       if (change > Thresh) {
@@ -190,10 +178,11 @@ void loop () {
       }
 
   }
-
+  else{
+    digitalWrite(ledPause, LOW);
+  }
   }
 }
-   
   
   
 
