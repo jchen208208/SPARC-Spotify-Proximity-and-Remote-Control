@@ -1,11 +1,5 @@
 #include <HCSR04.h>
 
-// Gesture map:
-//   Swift tap (< 600ms)          → "P"        play/pause
-//   Hold 2–15cm for 1.5s + move  → "S+" / "S-"  next / previous track
-//   Hold 15–30cm for 3s          → "V_START"  (Python reads and anchors current volume)
-//   Then move per 3cm            → "V+" / "V-"  volume up/down from that anchor
-
 // Pins
 byte triggerPin = 13;
 byte echoPin = 12;
