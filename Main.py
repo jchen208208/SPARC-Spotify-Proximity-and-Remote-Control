@@ -1,6 +1,9 @@
 import time
 import spotipy
 import serial
+import sys
+
+print(sys.executable)
 from spotipy.oauth2 import SpotifyOAuth
 from dotenv import load_dotenv
 
@@ -11,7 +14,7 @@ SERIAL_PORT = "YOUR_SERIAL_PORT_HERE"  # e.g. "COM3" or "/dev/ttyUSB0"
 BAUD_RATE = 9600
 # --------------------------------------------------------------
 
-TEST_MODE = True  # set ts back to False once we have the Arduino
+TEST_MODE = True  # set this back to False once we have the Arduino
 SCOPE = "user-modify-playback-state user-read-playback-state"
 VOLUME_STEP = 10  # percent change per V+/V- command
 
@@ -65,9 +68,15 @@ def volume_down(sp):
     print(f"Volume down: {current}% -> {new_volume}%")
 
 
-def pause(sp):
-    sp.pause_playback()
-    print("Playback paused.")
+def toggle_playback(sp):
+    playback = sp.current_playback()
+    if playback and playback.get("is_playing"):
+        sp.pause_playback()
+        print("Playback paused.")
+    else:
+        device = get_active_device(sp)
+        sp.start_playback(device_id=device["id"] if device else None)
+        print("Playback resumed.")
 
 
 COMMANDS = {
@@ -75,7 +84,7 @@ COMMANDS = {
     "S-": previous_track,
     "V+": volume_up,
     "V-": volume_down,
-    "P": pause,
+    "P": toggle_playback,
 }
 
 
