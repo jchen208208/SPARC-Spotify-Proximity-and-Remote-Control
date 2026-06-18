@@ -17,7 +17,7 @@ A desk-mounted gesture controller that lets you control Spotify hands-free using
 
 ## Overview
 
-GestureFM is a two-part embedded system:
+SPARC is a two-part embedded system:
 
 - **Firmware (C++)** — runs on an Arduino Uno. Reads distance values from an ultrasonic sensor every 50ms, applies a multi-layer false-trigger filter, and classifies hand motions into discrete gesture events using a direction and duration-based decision tree. Sends gesture labels as plain text over USB Serial.
 
@@ -29,33 +29,36 @@ The two sides communicate exclusively through plain text over USB Serial — a c
 
 ## Gesture Reference
 
-### Play / Pause
+The system recognizes **five gestures** across **two distance zones**:
 
-| Gesture | Zone | Motion | Action | LED Feedback |
-|---|---|---|---|---|
-| Double wave | Any | Two swift passes in front of sensor in quick succession | ⏸ Play / Pause | Brief flash |
+| Zone | Range |
+|---|---|
+| Zone 1 | 2–50 cm above sensor |
+| Zone 2 | 50–100 cm above sensor |
 
-### Switch Mode (Track Control)
+### Zone 1 — Track Control
 
-Entered by holding your hand still in the **2–15 cm zone** for **3 seconds**. Exits automatically when hand leaves the zone.
+| Gesture | Motion | Action |
+|---|---|---|
+| Single pass | Hand passes in front of sensor once, briefly | ⏭ Next track |
+| Double pass | Hand passes in front of sensor twice within 0.5 seconds | ⏮ Previous track |
+
+### Zone 2 — Volume Control
+
+Volume changes are continuous — once triggered, volume keeps increasing or decreasing until the **Stop** function is triggered.
+
+| Gesture | Motion | Action |
+|---|---|---|
+| Single pass | Hand passes in front of sensor once, briefly | 🔊 Begin volume up (continues until Stop) |
+| Double pass | Hand passes in front of sensor twice within 0.5 seconds | 🔉 Begin volume down (continues until Stop) |
+
+### Stop Function (Either Zone)
 
 | Gesture | Zone | Motion | Action |
 |---|---|---|---|
-| Hold to enter | 2–15 cm | Keep hand still for 3 seconds | 🎛 Enter switch mode |
-| Move away | 2–15 cm | Increase distance from sensor | ⏭ Next track |
-| Move closer | 2–15 cm | Decrease distance toward sensor | ⏮ Previous track |
+| Hold | 2–100 cm | Hand held still in front of sensor for 1 second straight | ⏸▶️ If volume is changing, stop the volume change. Otherwise, toggle Pause/Play |
 
-### Volume Mode
-
-Entered by holding your hand still in the **15–30 cm zone** for **3 seconds**. Exits automatically when hand leaves the zone. Every **2 cm** of movement maps to a **10% volume change**.
-
-| Gesture | Zone | Motion | Action |
-|---|---|---|---|
-| Hold to enter | 15–30 cm | Keep hand still for 3 seconds | 🔊 Enter volume mode |
-| Move away | 15–30 cm | Increase distance from sensor | 🔊 Volume up (+10% per 2 cm) |
-| Move closer | 15–30 cm | Decrease distance toward sensor | 🔉 Volume down (−10% per 2 cm) |
-
-Gestures are direction-based and intentionally intuitive — moving away from the sensor goes forward or louder, moving closer goes back or quieter. Modes are entered by holding still and exit automatically when the hand leaves the detection zone.
+The Stop function first checks whether volume is currently increasing or decreasing. If so, it stops the volume change. If volume is not changing, it toggles play/pause instead.
 
 ---
 
@@ -182,8 +185,8 @@ On startup, the Python backend checks conditions 2 and 3 and plays `connected.wa
 ### Software
 
 ```bash
-git clone https://github.com/yourusername/gesturefm.git
-cd gesturefm
+git clone https://github.com/yourusername/SPARC.git
+cd SPARC
 pip install -r requirements.txt
 ```
 
