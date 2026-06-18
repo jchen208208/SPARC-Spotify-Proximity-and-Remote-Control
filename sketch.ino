@@ -17,9 +17,8 @@ int ledPause = 4;
 int ledUp = 5;
 int ledDown = 6;
 
-//make the counter and confirmation delay to swtich mode
-int CntTimer = 0;
-int CntSConfirm = 40;
+//define threshold distance for detection of input gestures
+int Thresh = 10;
 
 //stuff for making sure the previous value is stored
 const int NUM_READINGS = 3;
@@ -27,19 +26,24 @@ double history[NUM_READINGS];
 int idx = 0;
 
 
-//tiemr stuff
+//timer stuff
 unsigned long handEnteredTime = 0;
-unsigned long handEnteredTimeP = 0;
+unsigned long handEnteredTimePause = 0;
 bool handInRange = false;
 int currentMode = 0; // 0 = volume, 1 = skip, 2 = pause/play
 
+//refresh timer
+unsigned long lastReadTimeRefresh = 0;
+const int READ_INTERVAL = 50; // read every 50ms instead of blocking
 
 //constants for the zones
-const int NEAR_ZONE = 15;   // 2-15cm = skip mode
-const int FAR_ZONE = 30;    // 15-30cm = volume mode
+const int NEAR_ZONE = 50;   // 2-15cm = skip mode
+const int FAR_ZONE = 100;    // 15-30cm = volume mode
 const int HOLD_TIME = 2000; // 3 seconds in ms
 const int COOLDOWN_MS = 1000;
 unsigned long lastModeSwitch = 0;
+
+
 
 void setup () {
   Serial.begin(9600);
@@ -60,7 +64,10 @@ void setup () {
 
 void loop () {
   
-  
+  //refrsesh
+  if (millis() - lastReadTimeRefresh < READ_INTERVAL) return; // skip if not time yet
+  lastReadTimeRefresh = millis();
+
   //store the distance into a pointer
   double* distances = HCSR04.measureDistanceCm();
   double current = distances[0];
@@ -74,7 +81,7 @@ void loop () {
   idx = (idx + 1) % NUM_READINGS;
 
   //see if its in range
-  bool inRange = (current >= 2 && current <= 30);
+  bool inRange = (current >= 2 && current <= 100);
   
   double change = current - previous;
 
@@ -82,13 +89,22 @@ void loop () {
     // hand just entered range
     handInRange = true;
     handEnteredTime = millis();
-    handEnteredTimeP = millis();
+    handEnteredTimePause = millis();
   } 
   
   else if (!inRange && handInRange) {
     // hand just left range
     handInRange = false;
-    unsigned long holdDurationOUT = millis() - handEnteredTimeP;
+    unsigned long holdDurationOUT = millis() - handEnteredTimePause;
+
+    
+    digitalWrite(ledSkip, LOW);
+    digitalWrite(ledVolume, LOW);
+    digitalWrite(ledPause, LOW);
+    digitalWrite(ledUp, LOW);
+    digitalWrite(ledDown, LOW);
+    digitalWrite(ledPause, LOW);
+      
 
     if (holdDurationOUT < HOLD_TIME) {
       // removed before 3 seconds = pause/play
@@ -104,6 +120,8 @@ void loop () {
   else if (inRange && handInRange) {
     // hand is still in range, check if 3 seconds have passed
     unsigned long holdDurationIN = millis() - handEnteredTime;
+    //Serial.print(distances[0]);
+    //Serial.println("cm");
 
     if (holdDurationIN >= HOLD_TIME && millis() - lastModeSwitch > COOLDOWN_MS) {
       // 3 seconds reached, check which zone
@@ -116,25 +134,11 @@ void loop () {
         digitalWrite(ledVolume, LOW);
 
         //Serial.println("MODE: Skip/Previous");
-        //Serial.print(holdDurationIN);
+        
 
-        //detect changes
-        if (change > 1.0) {
-            Serial.println("S+");
-            digitalWrite(ledUp, HIGH);
-            digitalWrite(ledDown, LOW);
-          } else if (change < -1.0) {
-            Serial.println("S-");
-            digitalWrite(ledUp, LOW);
-            digitalWrite(ledDown, HIGH);
-          } else {
-            //Serial.println("S=");
-            digitalWrite(ledUp, LOW);
-            digitalWrite(ledDown, LOW);
-          }
-
+        
       } 
-      else {
+      else if (NEAR_ZONE < current < FAR_ZONE) {
         //set mode
         currentMode = 0;
 
@@ -144,34 +148,48 @@ void loop () {
 
 
         //Serial.println("MODE: Volume");
-        //Serial.print(holdDurationIN);
+        
 
-        //detect changes
-        if (change > 1.0) {
-            Serial.println("V+");
-            digitalWrite(ledUp, HIGH);
-            digitalWrite(ledDown, LOW);
-          } else if (change < -1.0) {
-            Serial.println("V-");
-            digitalWrite(ledUp, LOW);
-            digitalWrite(ledDown, HIGH);
-          } else {
-            //Serial.println("V=");
-            digitalWrite(ledUp, LOW);
-            digitalWrite(ledDown, LOW);
-          }
+       
+        
 
       }
+      
       lastModeSwitch = millis();
       handEnteredTime = millis(); // reset so it doesnt keep triggering
     }
-  }
 
-  else {
-      //clearing the led's
-      digitalWrite(ledSkip, LOW);
-      digitalWrite(ledVolume, LOW);
-      digitalWrite(ledPause, LOW);
-    }
-    delay(100);
+    //if (millis() - lastModeSwitch < COOLDOWN_MS) return; // skip during cooldown
+
+    if (currentMode == 1) {
+      if (change > Thresh) {
+        Serial.println("S+");
+        digitalWrite(ledUp, HIGH);
+        digitalWrite(ledDown, LOW);
+      } else if (change < -Thresh) {
+        Serial.println("S-");
+        digitalWrite(ledUp, LOW);
+        digitalWrite(ledDown, HIGH);
+      } else {
+        digitalWrite(ledUp, LOW);
+        digitalWrite(ledDown, LOW);
+      }
+    } 
+    
+    else if (currentMode == 0) {
+      if (change > Thresh) {
+        Serial.println("V+");
+        digitalWrite(ledUp, HIGH);
+        digitalWrite(ledDown, LOW);
+      } else if (change < -Thresh) {
+        Serial.println("V-");
+        digitalWrite(ledUp, LOW);
+        digitalWrite(ledDown, HIGH);
+      } else {
+        digitalWrite(ledUp, LOW);
+        digitalWrite(ledDown, LOW);
+      }
+
+  }    
   }
+}
