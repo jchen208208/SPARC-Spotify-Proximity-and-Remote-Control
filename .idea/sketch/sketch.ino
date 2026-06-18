@@ -1,214 +1,152 @@
-#include <HCSR04.h>
-
-int swipeCount = 0;
-unsigned long firstSwipeTime = 0;
-const int SWIPE_WINDOW = 1000;
-
-//define the pins for the sensor
 const byte triggerPin = 13;
 const byte echoPin = 12;
 
-//define the pins for the two modes
 const int ledSkip = 2;
 const int ledVolume = 3;
-
-//define pin for pause
 const int ledPause = 4;
 
-//define pins for Up/down
-const int ledUp = 5;
-const int ledDown = 6;
+// Zone boundaries in cm
+const float DETECT_MIN = 2.0;
+const float ZONE1_MAX = 15.0;  // Zone 1: 2-15cm  → track control
+const float ZONE2_MAX = 30.0;  // Zone 2: 15-30cm → volume control
 
-//define threshold distance for detection of input gestures
-const int Thresh = 5;
+// Gesture timing
+const unsigned long HOLD_TIME = 1000;         // 1s hold triggers P
+const unsigned long DOUBLE_PASS_WINDOW = 750; // ms window to complete a double pass
+const unsigned long READ_INTERVAL = 25;
 
-//stuff for making sure the previous value is stored
-const int NUM_READINGS = 3;
-double history[NUM_READINGS];
-int idx = 0;
+// 6 consecutive out-of-range readings (150ms) required to confirm hand is gone
+const int OUT_OF_RANGE_THRESHOLD = 6;
 
-//range stuff
+// Non-blocking LED flash
+int flashPin = -1;
+unsigned long flashStart = 0;
+const unsigned long FLASH_DURATION = 150;
+
+bool handInZone = false;
+int handZone = 0;
+unsigned long handEntryTime = 0;
+bool holdFired = false;
+
+int passCount = 0;
+int passZone = 0;
+unsigned long firstPassExitTime = 0;
+
+// When volume is actively ramping, block all pass gestures
+bool volumeActive = false;
+
 int outOfRangeCount = 0;
-const int OUT_OF_RANGE_THRESHOLD = 4; // ~200ms of consecutive misses at 50ms interval
+unsigned long lastReadTime = 0;
 
-//timer stuff
-unsigned long handEnteredTime = 0;
-unsigned long handEnteredTimePause = 0;
-bool handInRange = false;
-int currentMode = 0; // 0 = volume, 1 = skip, 2 = pause/play
+float readDistanceCm() {
+  digitalWrite(triggerPin, LOW);
+@ -55,111 +44,109 @@ float readDistanceCm() {
+  digitalWrite(triggerPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(triggerPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 30000);
+  if (duration == 0) return -1;
+  return duration * 0.034 / 2.0;
+}
 
-//refresh timer
-unsigned long lastReadTimeRefresh = 0;
-const int READ_INTERVAL = 25; // read every 50ms instead of blocking
+void flashLed(int pin) {
+  if (flashPin >= 0) digitalWrite(flashPin, LOW);
+  digitalWrite(pin, HIGH);
+  flashPin = pin;
+  flashStart = millis();
+}
 
-//constants for the zones
-const int NEAR_ZONE = 15;   // 2-15cm = skip mode
-const int FAR_ZONE = 30;    // 15-30cm = volume mode
-const int HOLD_TIME = 2000; // 3 seconds in ms
-const int COOLDOWN_MS = 1000;
-unsigned long lastModeSwitch = 0;
-
-void setup () {
-  Serial.begin(9600);
-  //
-  HCSR04.begin(triggerPin, echoPin);
-  
-  
-  pinMode(ledSkip, OUTPUT);
-  pinMode(ledVolume, OUTPUT);
-  pinMode(ledUp, OUTPUT);
-  pinMode(ledDown, OUTPUT);
-  pinMode(ledPause, OUTPUT);
-
-  for (int i = 0; i < NUM_READINGS; i++) {
-    history[i] = 0.0;
+void handleFlash() {
+  if (flashPin >= 0 && millis() - flashStart >= FLASH_DURATION) {
+    digitalWrite(flashPin, LOW);
+    flashPin = -1;
   }
 }
 
-void loop () {
-  
-  //refrsesh
-  if (millis() - lastReadTimeRefresh < READ_INTERVAL) return; // skip if not time yet
-  lastReadTimeRefresh = millis();
+void setup() {
+  Serial.begin(9600);
+  pinMode(triggerPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(ledSkip, OUTPUT);
+  pinMode(ledVolume, OUTPUT);
+  pinMode(ledPause, OUTPUT);
+}
 
-  if (swipeCount == 1 && millis() - firstSwipeTime > SWIPE_WINDOW) {
-  swipeCount = 0;
-  firstSwipeTime = 0;
-  }
+void loop() {
+  if (millis() - lastReadTime < READ_INTERVAL) return;
+  lastReadTime = millis();
 
-  //store the distance into a pointer
-  double* distances = HCSR04.measureDistanceCm();
-  double current = distances[0];
+  handleFlash();
 
-  // get previous reading before we overwrite it
-  double previous = history[(idx - 1 + NUM_READINGS) % NUM_READINGS];
-  
- 
-  // store current reading into history
-  history[idx] = current;
-  idx = (idx + 1) % NUM_READINGS;
+  float current = readDistanceCm();
+  bool inZone = (current >= DETECT_MIN && current <= ZONE2_MAX);
 
-  //see if its in range
-  bool inRange = (current >= 2 && current <= 30);
-  
-  double change = current - previous;
-
-  if (inRange) {
-    outOfRangeCount = 0; // reset on any good reading
+  if (inZone) {
+    outOfRangeCount = 0;
   } else {
     outOfRangeCount++;
   }
+  bool handConfirmedGone = (!inZone && outOfRangeCount >= OUT_OF_RANGE_THRESHOLD);
 
-  bool handConfirmedGone = (!inRange && outOfRangeCount >= OUT_OF_RANGE_THRESHOLD);
-
-  if (inRange && !handInRange) {
-    // hand just entered range
-    handInRange = true;
-    handEnteredTime = millis();
-    handEnteredTimePause = millis();
+  if (inZone && !handInZone) {
+    handInZone = true;
+    handEntryTime = millis();
+    holdFired = false;
+    handZone = (current <= ZONE1_MAX) ? 1 : 2;
   }
-  else if (handConfirmedGone && handInRange) {
-    // hand genuinely left range (not just a noise spike)
-    handInRange = false;
+
+  else if (handConfirmedGone && handInZone) {
+    handInZone = false;
     outOfRangeCount = 0;
-    unsigned long holdDurationOUT = millis() - handEnteredTimePause;
 
-    
-    digitalWrite(ledSkip, LOW);
-    digitalWrite(ledVolume, LOW);
-    digitalWrite(ledUp, LOW);
-    digitalWrite(ledDown, LOW);
-    //digitalWrite(ledPause, LOW);
-      
-
-    if (holdDurationOUT < HOLD_TIME) {
-      unsigned long now = millis();
-
-      if (swipeCount == 0) {
-        // first swipe
-        swipeCount = 1;
-        firstSwipeTime = now;
-      } 
-      else if (swipeCount == 1) {
-        if (now - firstSwipeTime <= SWIPE_WINDOW) {
-          // second swipe within window = pause/play
-          Serial.println("P");
-          digitalWrite(ledPause, !digitalRead(ledPause));
+    if (!holdFired && !volumeActive) {
+      if (passCount == 0) {
+        passCount = 1;
+        passZone = handZone;
+        firstPassExitTime = millis();
+      } else if (passCount == 1 && handZone == passZone && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
+        // Double pass
+        if (passZone == 1) {
+          Serial.println("S-");
+        } else {
+          Serial.println("V-");
+          volumeActive = true;
+          digitalWrite(ledVolume, HIGH); // solid LED while volume ramping
         }
-    // reset regardless
-        swipeCount = 0;
-        firstSwipeTime = 0;
+        if (passZone == 1) flashLed(ledSkip);
+        passCount = 0;
+      } else {
+        // Too slow or wrong zone - fresh first pass
+        passCount = 1;
+        passZone = handZone;
+        firstPassExitTime = millis();
       }
     }
-    
-
-    // if they held for 3+ seconds, mode was already set when timer expired
-
-  } 
-  
-  else if (inRange && handInRange) {
-    // hand is still in range, check if 3 seconds have passed
-    unsigned long holdDurationIN = millis() - handEnteredTime;
-    //Serial.print(distances[0]);
-    //Serial.println("cm");
-
-    if (holdDurationIN >= HOLD_TIME && millis() - lastModeSwitch > COOLDOWN_MS) {
-      // 3 seconds reached, check which zone
-      if (current < NEAR_ZONE) {
-        //set mode
-        currentMode = 1;
-
-        //config led's
-        digitalWrite(ledSkip, HIGH);
-        digitalWrite(ledVolume, LOW);
-        
-      } 
-      else if (current >= NEAR_ZONE && current < FAR_ZONE) {
-        //set mode
-        currentMode = 0;
-
-        //config led's
-        digitalWrite(ledVolume, HIGH);
-        digitalWrite(ledSkip, LOW);
-
-
-
-      }
-      
-      lastModeSwitch = millis();
-      handEnteredTime = millis(); // reset so it doesnt keep triggering
-    }
-
-    if (currentMode == 1) {
-      if (change > Thresh) {
-        Serial.println("S+");
-        digitalWrite(ledUp, HIGH);
-        digitalWrite(ledDown, LOW);
-      } else if (change < -Thresh) {
-        Serial.println("S-");
-        digitalWrite(ledUp, LOW);
-        digitalWrite(ledDown, HIGH);
-      } else {
-        digitalWrite(ledUp, LOW);
-        digitalWrite(ledDown, LOW);
-      }
-    } 
-    
-    else if (currentMode == 0) {
-      if (change > Thresh) {
-        Serial.println("V+");
-        digitalWrite(ledUp, HIGH);
-        digitalWrite(ledDown, LOW);
-      } else if (change < -Thresh) {
-        Serial.println("V-");
-        digitalWrite(ledUp, LOW);
-        digitalWrite(ledDown, HIGH);
-      } else {
-        digitalWrite(ledUp, LOW);
-        digitalWrite(ledDown, LOW);
-      }
-
   }
 
+  else if (inZone && handInZone) {
+    // Check for hold
+    if (!holdFired && millis() - handEntryTime >= HOLD_TIME) {
+      Serial.println("P");
+      flashLed(ledPause);
+      holdFired = true;
+      passCount = 0;
+      // P always clears volume state regardless of what Python does with it
+      volumeActive = false;
+      digitalWrite(ledVolume, LOW);
+    }
+  }
+
+  // Confirm single pass once double-pass window expires
+  if (!handInZone && passCount == 1 && !volumeActive && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
+    if (passZone == 1) {
+      Serial.println("S+");
+      flashLed(ledSkip);
+    } else {
+      Serial.println("V+");
+      volumeActive = true;
+      digitalWrite(ledVolume, HIGH);
+    }
+    passCount = 0;
   }
 }
