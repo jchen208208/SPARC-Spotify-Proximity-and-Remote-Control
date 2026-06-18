@@ -3,15 +3,14 @@ import time
 import spotipy
 import serial
 from spotipy.oauth2 import SpotifyOAuth
-from spotipy.cache_handler import MemoryCacheHandler
 from dotenv import load_dotenv
 
 load_dotenv()
 
-SERIAL_PORT = "COM3"  # e.g. "COM3" or "/dev/ttyUSB0"
+SERIAL_PORT = "/dev/cu.usbmodem144302"
 BAUD_RATE = 9600
 
-TEST_MODE = True  # set this back to False once we have the Arduino
+TEST_MODE = False
 SCOPE = "user-modify-playback-state user-read-playback-state"
 VOLUME_STEP = 5  # percent per V+/V- step (matches 3cm bucket granularity)
 
@@ -22,21 +21,13 @@ def get_client():
     if missing:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
-    token_info = {
-        "access_token": os.getenv("SPOTIFY_ACCESS_TOKEN"),
-        "token_type": os.getenv("SPOTIFY_TOKEN_TYPE", "Bearer"),
-        "refresh_token": os.getenv("SPOTIFY_REFRESH_TOKEN"),
-        "expires_at": 0,  # force spotipy to refresh immediately
-        "scope": SCOPE,
-    }
-    cache_handler = MemoryCacheHandler(token_info=token_info)
-
+    # Token is saved to .cache after first browser auth and reused on restart
     auth_manager = SpotifyOAuth(
         client_id=os.getenv("SPOTIPY_CLIENT_ID"),
         client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
         redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
         scope=SCOPE,
-        cache_handler=cache_handler,
+        open_browser=True,
     )
     return spotipy.Spotify(auth_manager=auth_manager)
 
