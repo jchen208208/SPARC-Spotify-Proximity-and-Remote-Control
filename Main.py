@@ -2,12 +2,9 @@ import time
 import spotipy
 import serial
 from spotipy.oauth2 import SpotifyOAuth
+from dotenv import load_dotenv
 
-# --- Fill these in with your own Spotify app credentials ---
-CLIENT_ID = "aedcd492231b4672849e567c0d87f691"
-CLIENT_SECRET = "fdb0d30fbfc7449caabeed36d360410b"
-REDIRECT_URI = "https://developer.spotify.com/" # e.g. "http://localhost:8888/callback"
-# --------------------------------------------------------------
+load_dotenv()
 
 # --- Fill these in with your Arduino's serial connection details ---
 SERIAL_PORT = "YOUR_SERIAL_PORT_HERE"  # e.g. "COM3" or "/dev/ttyUSB0"
@@ -21,9 +18,6 @@ VOLUME_STEP = 10  # percent change per V+/V- command
 
 def get_client():
     auth_manager = SpotifyOAuth(
-        client_id=CLIENT_ID,
-        client_secret=CLIENT_SECRET,
-        redirect_uri=REDIRECT_URI,
         scope=SCOPE,
         cache_path=".spotify_cache",
     )
