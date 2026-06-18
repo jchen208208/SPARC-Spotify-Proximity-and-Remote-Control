@@ -1,7 +1,7 @@
 import time
 import serial
 
-SERIAL_PORT = "/dev/cu.usbmodem144302"
+SERIAL_PORT = "COM3"
 BAUD_RATE = 9600
 
 MESSAGES = {
