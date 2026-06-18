@@ -1,7 +1,8 @@
 import os
 import time
-import spotipy
+import threading
 import serial
+import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 from dotenv import load_dotenv
 
@@ -9,129 +10,142 @@ load_dotenv()
 
 SERIAL_PORT = "COM3"
 BAUD_RATE = 9600
-
-TEST_MODE = False
 SCOPE = "user-modify-playback-state user-read-playback-state"
-VOLUME_STEP = 5  # percent per V+/V- step (matches 3cm bucket granularity)
+
+VOLUME_STEP = 10        # % per tick while ramping
+VOLUME_INTERVAL = 0.1  # seconds between ticks
 
 
-def get_client():
-    required_vars = ["SPOTIPY_CLIENT_ID", "SPOTIPY_CLIENT_SECRET", "SPOTIPY_REDIRECT_URI"]
-    missing = [v for v in required_vars if not os.getenv(v)]
-    if missing:
-        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
-
-    # Token is saved to .cache after first browser auth and reused on restart
-    auth_manager = SpotifyOAuth(
+def get_spotify():
+    auth = SpotifyOAuth(
         client_id=os.getenv("SPOTIPY_CLIENT_ID"),
         client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
         redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
         scope=SCOPE,
         open_browser=True,
     )
-    return spotipy.Spotify(auth_manager=auth_manager)
+    return spotipy.Spotify(auth_manager=auth)
 
 
-def get_active_device(sp):
-    playback = sp.current_playback()
-    if playback and playback.get("device"):
-        return playback["device"]
-    devices = sp.devices().get("devices", [])
-    return devices[0] if devices else None
+# --- Volume ramping (background thread) ---
+
+_volume_stop = threading.Event()
+_volume_thread = None
 
 
-def skip_track(sp):
+def _ramp_volume(sp, direction):
+    _volume_stop.clear()
+    while not _volume_stop.wait(VOLUME_INTERVAL):
+        try:
+            playback = sp.current_playback()
+            if not playback or not playback.get("device"):
+                break
+            device = playback["device"]
+            current = device.get("volume_percent", 50)
+            new_vol = max(0, min(100, current + direction * VOLUME_STEP))
+            sp.volume(new_vol, device_id=device["id"])
+            print(f"  Volume: {new_vol}%")
+            if new_vol in (0, 100):
+                break
+        except Exception as e:
+            print(f"  Volume error: {e}")
+            break
+
+
+def start_volume(sp, direction):
+    global _volume_thread
+    _volume_stop.set()  # stop any existing ramp
+    _volume_thread = threading.Thread(target=_ramp_volume, args=(sp, direction), daemon=True)
+    _volume_thread.start()
+
+
+def stop_volume():
+    _volume_stop.set()
+
+
+def volume_active():
+    return _volume_thread is not None and _volume_thread.is_alive()
+
+
+# --- Spotify actions ---
+
+def next_track(sp):
     sp.next_track()
-    print("Skipped to next track.")
+    print("  Next track")
 
 
-def previous_track(sp):
+def prev_track(sp):
     sp.previous_track()
-    print("Went back to previous track.")
+    print("  Previous track")
 
 
-def toggle_playback(sp):
+def toggle_pause(sp):
     playback = sp.current_playback()
     if playback and playback.get("is_playing"):
         sp.pause_playback()
-        print("Playback paused.")
+        print("  Paused")
     else:
-        device = get_active_device(sp)
-        sp.start_playback(device_id=device["id"] if device else None)
-        print("Playback resumed.")
+        devices = sp.devices().get("devices", [])
+        device_id = devices[0]["id"] if devices else None
+        sp.start_playback(device_id=device_id)
+        print("  Resumed")
 
 
-def _adjust_volume(sp, delta):
-    device = get_active_device(sp)
-    if not device:
-        print("No active Spotify device found — is anything playing?")
-        return
-    current_vol = device.get("volume_percent", 50)
-    new_vol = max(0, min(100, current_vol + delta))
-    sp.volume(new_vol, device_id=device["id"])
-    print(f"Volume: {new_vol}%")
+def handle_stop(sp):
+    if volume_active():
+        stop_volume()
+        print("  Volume stopped")
+    else:
+        toggle_pause(sp)
 
 
-def volume_up(sp):
-    _adjust_volume(sp, VOLUME_STEP)
-
-
-def volume_down(sp):
-    _adjust_volume(sp, -VOLUME_STEP)
-
-
-COMMANDS = {
-    "S+": skip_track,
-    "S-": previous_track,
-    "V+": volume_up,
-    "V-": volume_down,
-    "P": toggle_playback,
+HANDLERS = {
+    "S+": lambda sp: next_track(sp),
+    "S-": lambda sp: prev_track(sp),
+    "V+": lambda sp: start_volume(sp, +1),
+    "V-": lambda sp: start_volume(sp, -1),
+    "P":  lambda sp: handle_stop(sp),
 }
 
 
-def dispatch(sp, line):
-    cmd = line.upper()
-    action = COMMANDS.get(cmd)
-    if action:
-        action(sp)
-    else:
-        print(f"Unrecognized command: '{line}'")
-
-
 def main():
-    sp = get_client()
+    sp = get_spotify()
 
-    if TEST_MODE:
-        print("TEST MODE: type commands (S+, S-, V+, V-, P) and press Enter. Ctrl+C to quit.")
-        try:
-            while True:
-                line = input("> ").strip()
-                if not line:
-                    continue
-                try:
-                    dispatch(sp, line)
-                except spotipy.exceptions.SpotifyException as e:
-                    print(f"Spotify API error: {e}")
-        except KeyboardInterrupt:
-            print("\nExiting.")
+    # Force auth before opening serial so the browser flow
+    # completes while the terminal is free
+    print("Connecting to Spotify...")
+    try:
+        user = sp.current_user()
+        print(f"Logged in as: {user['display_name']}\n")
+    except Exception as e:
+        print(f"Spotify auth failed: {e}")
         return
 
-    print(f"Connecting to Arduino on {SERIAL_PORT} at {BAUD_RATE} baud...")
+    print(f"Connecting to Arduino on {SERIAL_PORT}...")
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
     time.sleep(2)
-    print("Connected. Listening for commands (Ctrl+C to quit)...")
+    ser.reset_input_buffer()
+    print("Connected. Listening (Ctrl+C to quit)...\n")
 
     try:
         while True:
             line = ser.readline().decode("utf-8", errors="ignore").strip()
             if not line:
                 continue
-            try:
-                dispatch(sp, line)
-            except spotipy.exceptions.SpotifyException as e:
-                print(f"Spotify API error: {e}")
+            print(f"← {line}")
+            handler = HANDLERS.get(line)
+            if handler:
+                try:
+                    handler(sp)
+                except spotipy.exceptions.SpotifyException as e:
+                    print(f"  Spotify error: {e}")
+                except Exception as e:
+                    print(f"  Error: {e}")
+            else:
+                print(f"  [unrecognized] {repr(line)}")
     except KeyboardInterrupt:
         print("\nExiting.")
+        stop_volume()
     finally:
         ser.close()
 
