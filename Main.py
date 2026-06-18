@@ -118,13 +118,11 @@ def main():
             line = ser.readline().decode("utf-8", errors="ignore").strip()
             if not line:
                 continue  # no data this cycle
-
             cmd = line.upper()
             action = COMMANDS.get(cmd)
             if not action:
                 print(f"Unrecognized input from Arduino: '{line}'")
                 continue
-
             try:
                 action(sp)
             except spotipy.exceptions.SpotifyException as e:
