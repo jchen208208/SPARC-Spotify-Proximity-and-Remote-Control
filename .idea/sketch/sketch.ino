@@ -1,5 +1,9 @@
 #include <HCSR04.h>
 
+int swipeCount = 0;
+unsigned long firstSwipeTime = 0;
+const int SWIPE_WINDOW = 1000;
+
 //define the pins for the sensor
 const byte triggerPin = 13;
 const byte echoPin = 12;
@@ -23,6 +27,9 @@ const int NUM_READINGS = 3;
 double history[NUM_READINGS];
 int idx = 0;
 
+//range stuff
+int outOfRangeCount = 0;
+const int OUT_OF_RANGE_THRESHOLD = 4; // ~200ms of consecutive misses at 50ms interval
 
 //timer stuff
 unsigned long handEnteredTime = 0;
@@ -35,8 +42,8 @@ unsigned long lastReadTimeRefresh = 0;
 const int READ_INTERVAL = 50; // read every 50ms instead of blocking
 
 //constants for the zones
-const int NEAR_ZONE = 50;   // 2-15cm = skip mode
-const int FAR_ZONE = 100;    // 15-30cm = volume mode
+const int NEAR_ZONE = 15;   // 2-15cm = skip mode
+const int FAR_ZONE = 30;    // 15-30cm = volume mode
 const int HOLD_TIME = 2000; // 3 seconds in ms
 const int COOLDOWN_MS = 1000;
 unsigned long lastModeSwitch = 0;
@@ -64,6 +71,11 @@ void loop () {
   if (millis() - lastReadTimeRefresh < READ_INTERVAL) return; // skip if not time yet
   lastReadTimeRefresh = millis();
 
+  if (swipeCount == 1 && millis() - firstSwipeTime > SWIPE_WINDOW) {
+  swipeCount = 0;
+  firstSwipeTime = 0;
+  }
+
   //store the distance into a pointer
   double* distances = HCSR04.measureDistanceCm();
   double current = distances[0];
@@ -77,20 +89,28 @@ void loop () {
   idx = (idx + 1) % NUM_READINGS;
 
   //see if its in range
-  bool inRange = (current >= 2 && current <= 100);
+  bool inRange = (current >= 2 && current <= 30);
   
   double change = current - previous;
+
+  if (inRange) {
+    outOfRangeCount = 0; // reset on any good reading
+  } else {
+    outOfRangeCount++;
+  }
+
+  bool handConfirmedGone = (!inRange && outOfRangeCount >= OUT_OF_RANGE_THRESHOLD);
 
   if (inRange && !handInRange) {
     // hand just entered range
     handInRange = true;
     handEnteredTime = millis();
     handEnteredTimePause = millis();
-  } 
-  
-  else if (!inRange && handInRange) {
-    // hand just left range
+  }
+  else if (handConfirmedGone && handInRange) {
+    // hand genuinely left range (not just a noise spike)
     handInRange = false;
+    outOfRangeCount = 0;
     unsigned long holdDurationOUT = millis() - handEnteredTimePause;
 
     
@@ -102,11 +122,25 @@ void loop () {
       
 
     if (holdDurationOUT < HOLD_TIME) {
-      // removed before 3 seconds = pause/play
-      Serial.println("P");
-      digitalWrite(ledPause, !digitalRead(ledPause));
-      //Serial.print(holdDurationOUT);
+      unsigned long now = millis();
+
+      if (swipeCount == 0) {
+        // first swipe
+        swipeCount = 1;
+        firstSwipeTime = now;
+      } 
+      else if (swipeCount == 1) {
+        if (now - firstSwipeTime <= SWIPE_WINDOW) {
+          // second swipe within window = pause/play
+          Serial.println("P");
+          digitalWrite(ledPause, !digitalRead(ledPause));
+        }
+    // reset regardless
+        swipeCount = 0;
+        firstSwipeTime = 0;
+      }
     }
+    
 
     // if they held for 3+ seconds, mode was already set when timer expired
 
@@ -178,7 +212,3 @@ void loop () {
 
   }
 }
-   
-  
-  
-
