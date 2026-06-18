@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SERIAL_PORT = "YOUR_SERIAL_PORT_HERE"  # e.g. "COM3" or "/dev/ttyUSB0"
+SERIAL_PORT = "COM3"  # e.g. "COM3" or "/dev/ttyUSB0"
 BAUD_RATE = 9600
 
 TEST_MODE = True  # set this back to False once we have the Arduino
