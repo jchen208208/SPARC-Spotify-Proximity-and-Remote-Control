@@ -5,49 +5,38 @@ const int ledSkip = 2;
 const int ledVolume = 3;
 const int ledPause = 4;
 
-// Detection zones in cm
+// Zone boundaries in cm
 const float DETECT_MIN = 2.0;
-const float DETECT_MAX = 30.0;
-const float SWITCH_ZONE_MAX = 15.0;  // 2-15cm = switch mode, 15-30cm = volume mode
+const float ZONE1_MAX = 15.0;  // Zone 1: 2-15cm  → track control
+const float ZONE2_MAX = 30.0;  // Zone 2: 15-30cm → volume control
 
-// Timing
-const unsigned long HOLD_TIME = 3000;    // ms to hold still to enter a mode
-const unsigned long PAUSE_WINDOW = 1000; // max ms from first wave exit to second wave exit
-const unsigned long READ_INTERVAL = 25;  // sensor poll rate in ms
+// Gesture timing
+const unsigned long HOLD_TIME = 1000;         // 1s hold triggers P
+const unsigned long DOUBLE_PASS_WINDOW = 750; // ms window to complete a double pass
+const unsigned long READ_INTERVAL = 25;
 
-enum State { IDLE, HOLDING, SWITCH_MODE, VOLUME_MODE, PAUSE_PENDING };
-State state = IDLE;
+// 6 consecutive out-of-range readings (150ms) required to confirm hand is gone
+const int OUT_OF_RANGE_THRESHOLD = 6;
 
-const int NUM_READINGS = 3;
-float history[NUM_READINGS];
-int idx = 0;
+// Non-blocking LED flash
+int flashPin = -1;
+unsigned long flashStart = 0;
+const unsigned long FLASH_DURATION = 150;
 
-bool handInRange = false;
-unsigned long lastReadTime = 0;
-unsigned long handEnteredTime = 0;
-unsigned long firstWaveExitTime = 0;
+bool handInZone = false;
+int handZone = 0;
+unsigned long handEntryTime = 0;
+bool holdFired = false;
+
+int passCount = 0;
+int passZone = 0;
+unsigned long firstPassExitTime = 0;
+
+// When volume is actively ramping, block all pass gestures
+bool volumeActive = false;
 
 int outOfRangeCount = 0;
-const int OUT_OF_RANGE_THRESHOLD = 3;
-
-void clearModeLeds() {
-  digitalWrite(ledSkip, LOW);
-  digitalWrite(ledVolume, LOW);
-}
-
-void enterSwitchMode() {
-  state = SWITCH_MODE;
-  clearModeLeds();
-  digitalWrite(ledSkip, HIGH);
-  Serial.println("SWITCH_ON");
-}
-
-void enterVolumeMode() {
-  state = VOLUME_MODE;
-  clearModeLeds();
-  digitalWrite(ledVolume, HIGH);
-  Serial.println("VOLUME_ON");
-}
+unsigned long lastReadTime = 0;
 
 float readDistanceCm() {
   digitalWrite(triggerPin, LOW);
@@ -55,111 +44,109 @@ float readDistanceCm() {
   digitalWrite(triggerPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(triggerPin, LOW);
-  long duration = pulseIn(echoPin, HIGH, 25000); // 25ms timeout (~4m max)
+  long duration = pulseIn(echoPin, HIGH, 30000);
   if (duration == 0) return -1;
   return duration * 0.034 / 2.0;
+}
+
+void flashLed(int pin) {
+  if (flashPin >= 0) digitalWrite(flashPin, LOW);
+  digitalWrite(pin, HIGH);
+  flashPin = pin;
+  flashStart = millis();
+}
+
+void handleFlash() {
+  if (flashPin >= 0 && millis() - flashStart >= FLASH_DURATION) {
+    digitalWrite(flashPin, LOW);
+    flashPin = -1;
+  }
 }
 
 void setup() {
   Serial.begin(9600);
   pinMode(triggerPin, OUTPUT);
   pinMode(echoPin, INPUT);
-
   pinMode(ledSkip, OUTPUT);
   pinMode(ledVolume, OUTPUT);
   pinMode(ledPause, OUTPUT);
-
-  for (int i = 0; i < NUM_READINGS; i++) history[i] = 0.0;
 }
 
 void loop() {
   if (millis() - lastReadTime < READ_INTERVAL) return;
   lastReadTime = millis();
 
+  handleFlash();
+
   float current = readDistanceCm();
+  bool inZone = (current >= DETECT_MIN && current <= ZONE2_MAX);
 
-  history[idx] = current;
-  idx = (idx + 1) % NUM_READINGS;
-
-  bool inRange = (current >= DETECT_MIN && current <= DETECT_MAX);
-
-  if (inRange) {
+  if (inZone) {
     outOfRangeCount = 0;
   } else {
     outOfRangeCount++;
   }
-  bool handConfirmedGone = (!inRange && outOfRangeCount >= OUT_OF_RANGE_THRESHOLD);
+  bool handConfirmedGone = (!inZone && outOfRangeCount >= OUT_OF_RANGE_THRESHOLD);
 
-  if (inRange && !handInRange) {
-    handInRange = true;
-    handEnteredTime = millis();
-
-    if (state == IDLE) {
-      state = HOLDING;
-    }
-    // If PAUSE_PENDING: second wave starting, handEnteredTime tracks it
+  if (inZone && !handInZone) {
+    handInZone = true;
+    handEntryTime = millis();
+    holdFired = false;
+    handZone = (current <= ZONE1_MAX) ? 1 : 2;
   }
 
-  else if (handConfirmedGone && handInRange) {
-    handInRange = false;
+  else if (handConfirmedGone && handInZone) {
+    handInZone = false;
     outOfRangeCount = 0;
 
-    if (state == SWITCH_MODE) {
-      clearModeLeds();
-      Serial.println("SWITCH_OFF");
-      state = IDLE;
-    } else if (state == VOLUME_MODE) {
-      clearModeLeds();
-      Serial.println("VOLUME_OFF");
-      state = IDLE;
-    } else if (state == HOLDING) {
-      // Quick exit = first wave
-      firstWaveExitTime = millis();
-      state = PAUSE_PENDING;
-    } else if (state == PAUSE_PENDING) {
-      // Second wave exit - trigger pause if within window
-      if (millis() - firstWaveExitTime <= PAUSE_WINDOW) {
-        Serial.println("P");
-        digitalWrite(ledPause, !digitalRead(ledPause));
-      }
-      state = IDLE;
-    }
-  }
-
-  else if (inRange && handInRange) {
-    unsigned long holdDuration = millis() - handEnteredTime;
-
-    if (state == PAUSE_PENDING) {
-      if (millis() - firstWaveExitTime > PAUSE_WINDOW) {
-        // Too slow between waves - treat as a fresh hold
-        state = HOLDING;
-      } else if (holdDuration >= HOLD_TIME) {
-        // Second wave became a hold - enter mode instead
-        if (current < SWITCH_ZONE_MAX) {
-          enterSwitchMode();
+    if (!holdFired && !volumeActive) {
+      if (passCount == 0) {
+        passCount = 1;
+        passZone = handZone;
+        firstPassExitTime = millis();
+      } else if (passCount == 1 && handZone == passZone && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
+        // Double pass
+        if (passZone == 1) {
+          Serial.println("S-");
         } else {
-          enterVolumeMode();
+          Serial.println("V-");
+          volumeActive = true;
+          digitalWrite(ledVolume, HIGH); // solid LED while volume ramping
         }
-      }
-    }
-
-    else if (state == HOLDING) {
-      if (holdDuration >= HOLD_TIME) {
-        if (current >= DETECT_MIN && current < SWITCH_ZONE_MAX) {
-          enterSwitchMode();
-        } else if (current >= SWITCH_ZONE_MAX && current <= DETECT_MAX) {
-          enterVolumeMode();
-        } else {
-          handEnteredTime = millis(); // wrong zone, reset
-        }
+        if (passZone == 1) flashLed(ledSkip);
+        passCount = 0;
+      } else {
+        // Too slow or wrong zone - fresh first pass
+        passCount = 1;
+        passZone = handZone;
+        firstPassExitTime = millis();
       }
     }
   }
 
-  // Expire pause window when hand is out of range
-  if (!handInRange && state == PAUSE_PENDING) {
-    if (millis() - firstWaveExitTime > PAUSE_WINDOW) {
-      state = IDLE;
+  else if (inZone && handInZone) {
+    // Check for hold
+    if (!holdFired && millis() - handEntryTime >= HOLD_TIME) {
+      Serial.println("P");
+      flashLed(ledPause);
+      holdFired = true;
+      passCount = 0;
+      // P always clears volume state regardless of what Python does with it
+      volumeActive = false;
+      digitalWrite(ledVolume, LOW);
     }
+  }
+
+  // Confirm single pass once double-pass window expires
+  if (!handInZone && passCount == 1 && !volumeActive && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
+    if (passZone == 1) {
+      Serial.println("S+");
+      flashLed(ledSkip);
+    } else {
+      Serial.println("V+");
+      volumeActive = true;
+      digitalWrite(ledVolume, HIGH);
+    }
+    passCount = 0;
   }
 }

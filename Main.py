@@ -1,22 +1,22 @@
 import time
 import serial
 
-SERIAL_PORT = "COM3"
+SERIAL_PORT = "/dev/cu.usbmodem144302"
 BAUD_RATE = 9600
 
 MESSAGES = {
-    "SWITCH_ON":  "[MODE] Entered SWITCH mode",
-    "SWITCH_OFF": "[MODE] Exited SWITCH mode",
-    "VOLUME_ON":  "[MODE] Entered VOLUME mode",
-    "VOLUME_OFF": "[MODE] Exited VOLUME mode",
-    "P":          "[ACTION] Pause / Play",
+    "S+": "[ZONE 1] Next track",
+    "S-": "[ZONE 1] Previous track",
+    "V+": "[ZONE 2] Volume up (start)",
+    "V-": "[ZONE 2] Volume down (start)",
+    "P":  "[STOP] Stop volume / Toggle pause",
 }
 
 def main():
     print(f"Connecting to Arduino on {SERIAL_PORT}...")
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
     time.sleep(2)
-    ser.reset_input_buffer()  # discard startup garbage
+    ser.reset_input_buffer()
     print("Connected. Listening (Ctrl+C to quit)...\n")
 
     try:
