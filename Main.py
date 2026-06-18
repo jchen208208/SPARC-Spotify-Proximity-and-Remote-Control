@@ -1,9 +1,6 @@
 import time
 import spotipy
 import serial
-import sys
-
-print(sys.executable)
 from spotipy.oauth2 import SpotifyOAuth
 from dotenv import load_dotenv
 
