@@ -29,17 +29,33 @@ The two sides communicate exclusively through plain text over USB Serial — a c
 
 ## Gesture Reference
 
-| Gesture | Motion | Action |
-|---|---|---|
-| Swift approach | Quick hand move toward sensor | ⏭ Next track |
-| Swift retreat | Quick hand move away from sensor | ⏮ Previous track |
-| Double entry | Hand enters zone twice within 1 second | ⏸ Pause / Resume |
-| Hold | Hand stays still in zone for 1.5+ seconds | 🔊 Enter volume mode |
-| Hold + move closer | Hand approaches sensor slowly | 🔉 Volume down |
-| Hold + move away | Hand retreats from sensor slowly | 🔊 Volume up |
-| Quad entry | Hand enters zone four times rapidly | 🎯 Switch to focus playlist |
+### Play / Pause
 
-Gestures are direction-based and intentionally intuitive — moving toward the sensor goes forward, moving away goes back. Volume mode is entered by holding the hand still and exited automatically when the hand leaves the detection zone.
+| Gesture | Zone | Motion | Action | LED Feedback |
+|---|---|---|---|---|
+| Double wave | Any | Two swift passes in front of sensor in quick succession | ⏸ Play / Pause | Brief flash |
+
+### Switch Mode (Track Control)
+
+Entered by holding your hand still in the **2–15 cm zone** for **3 seconds**. Exits automatically when hand leaves the zone.
+
+| Gesture | Zone | Motion | Action |
+|---|---|---|---|
+| Hold to enter | 2–15 cm | Keep hand still for 3 seconds | 🎛 Enter switch mode |
+| Move away | 2–15 cm | Increase distance from sensor | ⏭ Next track |
+| Move closer | 2–15 cm | Decrease distance toward sensor | ⏮ Previous track |
+
+### Volume Mode
+
+Entered by holding your hand still in the **15–30 cm zone** for **3 seconds**. Exits automatically when hand leaves the zone. Every **2 cm** of movement maps to a **10% volume change**.
+
+| Gesture | Zone | Motion | Action |
+|---|---|---|---|
+| Hold to enter | 15–30 cm | Keep hand still for 3 seconds | 🔊 Enter volume mode |
+| Move away | 15–30 cm | Increase distance from sensor | 🔊 Volume up (+10% per 2 cm) |
+| Move closer | 15–30 cm | Decrease distance toward sensor | 🔉 Volume down (−10% per 2 cm) |
+
+Gestures are direction-based and intentionally intuitive — moving away from the sensor goes forward or louder, moving closer goes back or quieter. Modes are entered by holding still and exit automatically when the hand leaves the detection zone.
 
 ---
 
