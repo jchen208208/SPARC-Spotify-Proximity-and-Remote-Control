@@ -1,244 +1,184 @@
 #include <HCSR04.h>
 
-// Pins
-byte triggerPin = 13;
-byte echoPin = 12;
+//define the pins for the sensor
+const byte triggerPin = 13;
+const byte echoPin = 12;
 
-const int LED_SKIP = 2;
-const int LED_VOLUME = 3;
-const int LED_PAUSE = 4;
-const int LED_UP = 5;
-const int LED_DOWN = 6;
+//define the pins for the two modes
+const int ledSkip = 2;
+const int ledVolume = 3;
 
-// Detection zones (cm)
-const float ZONE_SKIP_MIN = 2.0;
-const float ZONE_SKIP_MAX = 15.0;
-const float ZONE_VOL_MIN = 15.0;
-const float ZONE_VOL_MAX = 30.0;
+//define pin for pause
+const int ledPause = 4;
 
-// Timing (ms)
-const unsigned long READ_INTERVAL = 50;
-const unsigned long SWIFT_MAX_MS = 600;   // hand must leave within this for play/pause
-const unsigned long SKIP_HOLD_MS = 1500;  // 1.5 seconds to arm skip mode
-const unsigned long VOL_HOLD_MS = 3000;   // 3 seconds to arm volume mode
-const unsigned long CMD_COOLDOWN_MS = 800;
-const unsigned long VOL_COOLDOWN_MS = 200;
-const unsigned long LED_FLASH_MS = 200;
+//define pins for Up/down
+const int ledUp = 5;
+const int ledDown = 6;
 
-// Minimum movement to fire a skip command
-const float SKIP_MOVE_CM = 5.0;
+//define threshold distance for detection of input gestures
+const int Thresh = 2;
 
-// Volume mode — EMA smoothing + anchor-relative bucket control
-const float EMA_ALPHA = 0.15;
-const float VOL_BUCKET_CM = 3.0; // each 3cm from entry = one V+/V-
-
-// State machine: IDLE -> WAITING -> SKIP_MODE or VOL_MODE -> IDLE
-enum State { STATE_IDLE, STATE_WAITING, STATE_SKIP_MODE, STATE_VOL_MODE };
-State currentState = STATE_IDLE;
-
-// Rolling average buffer (5 samples, 250ms window)
-const int NUM_READINGS = 5;
-float history[NUM_READINGS];
-int histIdx = 0;
-int readingCount = 0;
-
-// Require 3 consecutive in-range readings before accepting hand as present
-const int CONFIRM_NEEDED = 3;
-int confirmCount = 0;
-
-// Timing state
-unsigned long lastReadTime = 0;
-unsigned long handEnteredAt = 0;
-unsigned long lastCmdTime = 0;
-unsigned long lastVolCmdTime = 0;
-
-// Non-blocking LED flash state
-int flashPin = -1;
-unsigned long flashStartedAt = 0;
-
-// Skip mode state
-float skipAnchorDist = 0.0;
-bool skipFired = false;
-
-// Volume mode state
-float volEma = 0.0;
-float volAnchorDist = 0.0; // hand position when vol mode was entered
-int volLastBucket = 0;
-bool volEmaSeeded = false;
+//stuff for making sure the previous value is stored
+const int NUM_READINGS = 3;
+double history[NUM_READINGS];
+int idx = 0;
 
 
-float smoothedDistance() {
-    if (readingCount == 0) return 999.0;
-    float sum = 0.0;
-    int n = min(readingCount, NUM_READINGS);
-    for (int i = 0; i < n; i++) sum += history[i];
-    return sum / n;
+//timer stuff
+unsigned long handEnteredTime = 0;
+unsigned long handEnteredTimePause = 0;
+bool handInRange = false;
+int currentMode = 0; // 0 = volume, 1 = skip, 2 = pause/play
+
+//refresh timer
+unsigned long lastReadTimeRefresh = 0;
+const int READ_INTERVAL = 50; // read every 50ms instead of blocking
+
+//constants for the zones
+const int NEAR_ZONE = 50;   // 2-15cm = skip mode
+const int FAR_ZONE = 100;    // 15-30cm = volume mode
+const int HOLD_TIME = 2000; // 3 seconds in ms
+const int COOLDOWN_MS = 1000;
+unsigned long lastModeSwitch = 0;
+
+void setup () {
+  Serial.begin(9600);
+  //
+  HCSR04.begin(triggerPin, echoPin);
+  
+  
+  pinMode(ledSkip, OUTPUT);
+  pinMode(ledVolume, OUTPUT);
+  pinMode(ledUp, OUTPUT);
+  pinMode(ledDown, OUTPUT);
+  pinMode(ledPause, OUTPUT);
+
+  for (int i = 0; i < NUM_READINGS; i++) {
+    history[i] = 0.0;
+  }
 }
 
-void allLedsOff() {
-    digitalWrite(LED_SKIP, LOW);
-    analogWrite(LED_VOLUME, 0);
-    digitalWrite(LED_PAUSE, LOW);
-    digitalWrite(LED_UP, LOW);
-    digitalWrite(LED_DOWN, LOW);
-}
+void loop () {
+  
+  //refrsesh
+  if (millis() - lastReadTimeRefresh < READ_INTERVAL) return; // skip if not time yet
+  lastReadTimeRefresh = millis();
 
-// Start a timed LED flash without blocking the loop
-void flashLed(int pin) {
-    flashPin = pin;
-    flashStartedAt = millis();
-    digitalWrite(pin, HIGH);
-}
+  //store the distance into a pointer
+  double* distances = HCSR04.measureDistanceCm();
+  double current = distances[0];
 
-void updateLedFlash() {
-    if (flashPin != -1 && millis() - flashStartedAt >= LED_FLASH_MS) {
-        digitalWrite(flashPin, LOW);
-        flashPin = -1;
+  // get previous reading before we overwrite it
+  double previous = history[(idx - 1 + NUM_READINGS) % NUM_READINGS];
+  
+ 
+  // store current reading into history
+  history[idx] = current;
+  idx = (idx + 1) % NUM_READINGS;
+
+  //see if its in range
+  bool inRange = (current >= 2 && current <= 100);
+  
+  double change = current - previous;
+
+  if (inRange && !handInRange) {
+    // hand just entered range
+    handInRange = true;
+    handEnteredTime = millis();
+    handEnteredTimePause = millis();
+  } 
+  
+  else if (!inRange && handInRange) {
+    // hand just left range
+    handInRange = false;
+    unsigned long holdDurationOUT = millis() - handEnteredTimePause;
+
+    
+    digitalWrite(ledSkip, LOW);
+    digitalWrite(ledVolume, LOW);
+    digitalWrite(ledUp, LOW);
+    digitalWrite(ledDown, LOW);
+    digitalWrite(ledPause, LOW);
+      
+
+    if (holdDurationOUT < HOLD_TIME) {
+      // removed before 3 seconds = pause/play
+      Serial.println("P");
+      digitalWrite(ledPause, HIGH);
+      //Serial.print(holdDurationOUT);
     }
-}
 
-void setup() {
-    Serial.begin(9600);
-    HCSR04.begin(triggerPin, echoPin);
-    pinMode(LED_SKIP, OUTPUT);
-    pinMode(LED_VOLUME, OUTPUT);
-    pinMode(LED_PAUSE, OUTPUT);
-    pinMode(LED_UP, OUTPUT);
-    pinMode(LED_DOWN, OUTPUT);
-    for (int i = 0; i < NUM_READINGS; i++) history[i] = 0.0;
-}
+    // if they held for 3+ seconds, mode was already set when timer expired
 
-void loop() {
-    if (millis() - lastReadTime < READ_INTERVAL) return;
-    lastReadTime = millis();
+  } 
+  
+  else if (inRange && handInRange) {
+    // hand is still in range, check if 3 seconds have passed
+    unsigned long holdDurationIN = millis() - handEnteredTime;
+    //Serial.print(distances[0]);
+    //Serial.println("cm");
 
-    updateLedFlash();
+    if (holdDurationIN >= HOLD_TIME && millis() - lastModeSwitch > COOLDOWN_MS) {
+      // 3 seconds reached, check which zone
+      if (current < NEAR_ZONE) {
+        //set mode
+        currentMode = 1;
 
-    // Read sensor and update rolling average
-    double* raw = HCSR04.measureDistanceCm();
-    history[histIdx] = (float)raw[0];
-    histIdx = (histIdx + 1) % NUM_READINGS;
-    if (readingCount < NUM_READINGS) readingCount++;
-    float current = smoothedDistance();
+        //config led's
+        digitalWrite(ledSkip, HIGH);
+        digitalWrite(ledVolume, LOW);
+        
+      } 
+      else if (NEAR_ZONE < current < FAR_ZONE) {
+        //set mode
+        currentMode = 0;
 
-    // Classify zone
-    bool inSkipZone = (current >= ZONE_SKIP_MIN && current <= ZONE_SKIP_MAX);
-    bool inVolZone = (current > ZONE_VOL_MIN && current <= ZONE_VOL_MAX);
-    bool inAnyZone = inSkipZone || inVolZone;
+        //config led's
+        digitalWrite(ledVolume, HIGH);
+        digitalWrite(ledSkip, LOW);
 
-    // Require CONFIRM_NEEDED consecutive in-range readings before acting
-    if (inAnyZone) { if (confirmCount < CONFIRM_NEEDED) confirmCount++; }
-    else { confirmCount = 0; }
-    bool handConfirmed = (confirmCount >= CONFIRM_NEEDED);
 
-    switch (currentState) {
 
-        case STATE_IDLE:
-            if (handConfirmed) {
-                currentState = STATE_WAITING;
-                handEnteredAt = millis();
-                skipAnchorDist = current;
-                skipFired = false;
-            }
-            break;
-
-        // Swift tap fires play/pause, sustained hold arms a mode
-        case STATE_WAITING:
-            if (!inAnyZone) {
-                unsigned long heldFor = millis() - handEnteredAt;
-                if (heldFor < SWIFT_MAX_MS && millis() - lastCmdTime > CMD_COOLDOWN_MS) {
-                    Serial.println("P");
-                    lastCmdTime = millis();
-                    flashLed(LED_PAUSE);
-                }
-                currentState = STATE_IDLE;
-            } else {
-                unsigned long heldFor = millis() - handEnteredAt;
-                if (inSkipZone && heldFor >= SKIP_HOLD_MS) {
-                    currentState = STATE_SKIP_MODE;
-                    skipAnchorDist = current;
-                    skipFired = false;
-                    allLedsOff();
-                    digitalWrite(LED_SKIP, HIGH);
-                } else if (inVolZone && heldFor >= VOL_HOLD_MS) {
-                    currentState = STATE_VOL_MODE;
-                    volEmaSeeded = false;
-                    allLedsOff();
-                    digitalWrite(LED_VOLUME, HIGH);
-                    // Tell Python to read the current Spotify volume right now —
-                    // that volume becomes the anchor for all V+/V- adjustments
-                    Serial.println("V_START");
-                }
-            }
-            break;
-
-        // Skip armed — fire once on directional motion, re-arm after cooldown
-        case STATE_SKIP_MODE:
-            if (!inSkipZone) {
-                currentState = STATE_IDLE;
-                allLedsOff();
-                break;
-            }
-            if (skipFired && millis() - lastCmdTime > CMD_COOLDOWN_MS) {
-                skipFired = false;
-                skipAnchorDist = current; // new baseline for next gesture
-            }
-            if (!skipFired) {
-                float movement = skipAnchorDist - current; // positive = moved closer
-                if (movement >= SKIP_MOVE_CM) {
-                    Serial.println("S+");
-                    lastCmdTime = millis();
-                    skipFired = true;
-                    flashLed(LED_UP);
-                } else if (movement <= -SKIP_MOVE_CM) {
-                    Serial.println("S-");
-                    lastCmdTime = millis();
-                    skipFired = true;
-                    flashLed(LED_DOWN);
-                }
-            }
-            break;
-
-        // Volume mode — anchor-relative bucket control
-        // Entry position = center. Each 3cm closer = V+, each 3cm away = V-.
-        // Python uses V_START to know the real starting volume, so all adjustments
-        // are relative to actual Spotify volume at the moment the user armed the mode.
-        case STATE_VOL_MODE:
-            if (!inVolZone) {
-                currentState = STATE_IDLE;
-                volEmaSeeded = false;
-                allLedsOff();
-                break;
-            }
-            {
-                if (!volEmaSeeded) {
-                    volEma = current;
-                    volAnchorDist = current;
-                    volLastBucket = 0;
-                    volEmaSeeded = true;
-                }
-
-                volEma = EMA_ALPHA * current + (1.0 - EMA_ALPHA) * volEma;
-
-                // Bucket relative to entry point — positive = moved closer = louder
-                int bucket = (int)round((volAnchorDist - volEma) / VOL_BUCKET_CM);
-
-                if (bucket != volLastBucket && millis() - lastVolCmdTime >= VOL_COOLDOWN_MS) {
-                    if (bucket > volLastBucket) {
-                        Serial.println("V+");
-                        flashLed(LED_UP);
-                        volLastBucket++;
-                    } else {
-                        Serial.println("V-");
-                        flashLed(LED_DOWN);
-                        volLastBucket--;
-                    }
-                    lastVolCmdTime = millis();
-                    lastCmdTime = millis();
-                }
-
-                digitalWrite(LED_VOLUME, HIGH);
-            }
-            break;
+      }
+      
+      lastModeSwitch = millis();
+      handEnteredTime = millis(); // reset so it doesnt keep triggering
     }
+
+    if (currentMode == 1) {
+      if (change > Thresh) {
+        Serial.println("S+");
+        digitalWrite(ledUp, HIGH);
+        digitalWrite(ledDown, LOW);
+      } else if (change < -Thresh) {
+        Serial.println("S-");
+        digitalWrite(ledUp, LOW);
+        digitalWrite(ledDown, HIGH);
+      } else {
+        digitalWrite(ledUp, LOW);
+        digitalWrite(ledDown, LOW);
+      }
+    } 
+    
+    else if (currentMode == 0) {
+      if (change > Thresh) {
+        Serial.println("V+");
+        digitalWrite(ledUp, HIGH);
+        digitalWrite(ledDown, LOW);
+      } else if (change < -Thresh) {
+        Serial.println("V-");
+        digitalWrite(ledUp, LOW);
+        digitalWrite(ledDown, HIGH);
+      } else {
+        digitalWrite(ledUp, LOW);
+        digitalWrite(ledDown, LOW);
+      }
+
+  }
+
+  }
 }
+   
+  
+  
+
