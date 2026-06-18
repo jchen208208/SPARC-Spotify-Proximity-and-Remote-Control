@@ -2,23 +2,23 @@
 
 
 //define the pins for the sensor
-byte triggerPin = 13;
-byte echoPin = 12;
+const byte triggerPin = 13;
+const byte echoPin = 12;
 
 
 //define the pins for the two modes
-int ledSkip = 2;
-int ledVolume = 3;
+const int ledSkip = 2;
+const int ledVolume = 3;
 
 //define pin for pause
-int ledPause = 4;
+const int ledPause = 4;
 
 //define pins for Up/down
-int ledUp = 5;
-int ledDown = 6;
+const int ledUp = 5;
+const int ledDown = 6;
 
 //define threshold distance for detection of input gestures
-int Thresh = 10;
+const int Thresh = 10;
 
 //stuff for making sure the previous value is stored
 const int NUM_READINGS = 3;
@@ -37,8 +37,8 @@ unsigned long lastReadTimeRefresh = 0;
 const int READ_INTERVAL = 50; // read every 50ms instead of blocking
 
 //constants for the zones
-const int NEAR_ZONE = 50;   // 2-15cm = skip mode
-const int FAR_ZONE = 100;    // 15-30cm = volume mode
+const int NEAR_ZONE = 15;   // 2-15cm = skip mode
+const int FAR_ZONE = 30;    // 15-30cm = volume mode
 const int HOLD_TIME = 2000; // 3 seconds in ms
 const int COOLDOWN_MS = 1000;
 unsigned long lastModeSwitch = 0;
@@ -81,7 +81,7 @@ void loop () {
   idx = (idx + 1) % NUM_READINGS;
 
   //see if its in range
-  bool inRange = (current >= 2 && current <= 100);
+  bool inRange = (current >= 2 && current <= FAR_ZONE);
   
   double change = current - previous;
 
@@ -100,7 +100,6 @@ void loop () {
     
     digitalWrite(ledSkip, LOW);
     digitalWrite(ledVolume, LOW);
-    digitalWrite(ledPause, LOW);
     digitalWrite(ledUp, LOW);
     digitalWrite(ledDown, LOW);
     digitalWrite(ledPause, LOW);
@@ -190,6 +189,11 @@ void loop () {
         digitalWrite(ledDown, LOW);
       }
 
-  }    
+  }
+
   }
 }
+   
+  
+  
+
