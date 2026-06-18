@@ -1,7 +1,9 @@
+import os
 import time
 import spotipy
 import serial
 from spotipy.oauth2 import SpotifyOAuth
+from spotipy.cache_handler import MemoryCacheHandler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,9 +17,27 @@ VOLUME_STEP = 5  # percent per V+/V- step (matches 3cm bucket granularity)
 
 
 def get_client():
-    # Opens a browser for OAuth on first run, then caches the token in .spotify_cache.
-    # Requires SPOTIPY_CLIENT_ID, SPOTIPY_CLIENT_SECRET, SPOTIPY_REDIRECT_URI in .env.
-    auth_manager = SpotifyOAuth(scope=SCOPE, cache_path=".spotify_cache")
+    required_vars = ["SPOTIPY_CLIENT_ID", "SPOTIPY_CLIENT_SECRET", "SPOTIPY_REDIRECT_URI"]
+    missing = [v for v in required_vars if not os.getenv(v)]
+    if missing:
+        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+    token_info = {
+        "access_token": os.getenv("SPOTIFY_ACCESS_TOKEN"),
+        "token_type": os.getenv("SPOTIFY_TOKEN_TYPE", "Bearer"),
+        "refresh_token": os.getenv("SPOTIFY_REFRESH_TOKEN"),
+        "expires_at": 0,  # force spotipy to refresh immediately
+        "scope": SCOPE,
+    }
+    cache_handler = MemoryCacheHandler(token_info=token_info)
+
+    auth_manager = SpotifyOAuth(
+        client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+        client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
+        redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
+        scope=SCOPE,
+        cache_handler=cache_handler,
+    )
     return spotipy.Spotify(auth_manager=auth_manager)
 
 
@@ -50,38 +70,36 @@ def toggle_playback(sp):
         print("Playback resumed.")
 
 
+def _adjust_volume(sp, delta):
+    device = get_active_device(sp)
+    if not device:
+        print("No active Spotify device found — is anything playing?")
+        return
+    current_vol = device.get("volume_percent", 50)
+    new_vol = max(0, min(100, current_vol + delta))
+    sp.volume(new_vol, device_id=device["id"])
+    print(f"Volume: {new_vol}%")
+
+
+def volume_up(sp):
+    _adjust_volume(sp, VOLUME_STEP)
+
+
+def volume_down(sp):
+    _adjust_volume(sp, -VOLUME_STEP)
+
+
 COMMANDS = {
     "S+": skip_track,
     "S-": previous_track,
+    "V+": volume_up,
+    "V-": volume_down,
     "P": toggle_playback,
 }
 
 
-def dispatch(sp, line, state):
+def dispatch(sp, line):
     cmd = line.upper()
-
-    if cmd == "V_START":
-        # Arduino just armed volume mode — read the real current Spotify volume
-        # so that the user's hand position maps to where the volume actually is.
-        playback = sp.current_playback()
-        vol = 50  # safe fallback if playback state is unavailable
-        if playback and playback.get("device"):
-            vol = playback["device"].get("volume_percent", 50)
-        state["tracked_volume"] = vol
-        print(f"Volume mode armed — anchored at {vol}%")
-        return
-
-    if cmd in ("V+", "V-"):
-        if state["tracked_volume"] is None:
-            return  # V_START not received yet, ignore stray commands
-        delta = VOLUME_STEP if cmd == "V+" else -VOLUME_STEP
-        state["tracked_volume"] = max(0, min(100, state["tracked_volume"] + delta))
-        device = get_active_device(sp)
-        if device:
-            sp.volume(state["tracked_volume"], device_id=device["id"])
-            print(f"Volume: {state['tracked_volume']}%")
-        return
-
     action = COMMANDS.get(cmd)
     if action:
         action(sp)
@@ -91,17 +109,16 @@ def dispatch(sp, line, state):
 
 def main():
     sp = get_client()
-    state = {"tracked_volume": None}
 
     if TEST_MODE:
-        print("TEST MODE: type commands (S+, S-, V_START, V+, V-, P) and press Enter. Ctrl+C to quit.")
+        print("TEST MODE: type commands (S+, S-, V+, V-, P) and press Enter. Ctrl+C to quit.")
         try:
             while True:
                 line = input("> ").strip()
                 if not line:
                     continue
                 try:
-                    dispatch(sp, line, state)
+                    dispatch(sp, line)
                 except spotipy.exceptions.SpotifyException as e:
                     print(f"Spotify API error: {e}")
         except KeyboardInterrupt:
@@ -110,7 +127,7 @@ def main():
 
     print(f"Connecting to Arduino on {SERIAL_PORT} at {BAUD_RATE} baud...")
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-    time.sleep(2)  # give the Arduino time to reset after the connection opens
+    time.sleep(2)
     print("Connected. Listening for commands (Ctrl+C to quit)...")
 
     try:
@@ -119,7 +136,7 @@ def main():
             if not line:
                 continue
             try:
-                dispatch(sp, line, state)
+                dispatch(sp, line)
             except spotipy.exceptions.SpotifyException as e:
                 print(f"Spotify API error: {e}")
     except KeyboardInterrupt:
