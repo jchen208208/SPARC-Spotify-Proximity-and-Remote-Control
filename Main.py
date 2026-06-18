@@ -12,8 +12,8 @@ SERIAL_PORT = "/dev/cu.usbmodem144302"
 BAUD_RATE = 9600
 SCOPE = "user-modify-playback-state user-read-playback-state"
 
-VOLUME_STEP = 5        # % per tick while ramping
-VOLUME_INTERVAL = 0.5  # seconds between ticks
+VOLUME_STEP = 7        # % per tick while ramping
+VOLUME_INTERVAL = 0.1  # seconds between ticks
 
 
 def get_spotify():
@@ -35,7 +35,7 @@ _volume_thread = None
 
 def _ramp_volume(sp, direction):
     _volume_stop.clear()
-    while not _volume_stop.wait(VOLUME_INTERVAL):
+    while True:
         try:
             playback = sp.current_playback()
             if not playback or not playback.get("device"):
@@ -49,6 +49,8 @@ def _ramp_volume(sp, direction):
                 break
         except Exception as e:
             print(f"  Volume error: {e}")
+            break
+        if _volume_stop.wait(VOLUME_INTERVAL):
             break
 
 
