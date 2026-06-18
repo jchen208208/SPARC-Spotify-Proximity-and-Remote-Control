@@ -16,7 +16,7 @@ const int ledUp = 5;
 const int ledDown = 6;
 
 //define threshold distance for detection of input gestures
-const int Thresh = 2;
+const int Thresh = 10;
 
 //stuff for making sure the previous value is stored
 const int NUM_READINGS = 3;
@@ -98,13 +98,13 @@ void loop () {
     digitalWrite(ledVolume, LOW);
     digitalWrite(ledUp, LOW);
     digitalWrite(ledDown, LOW);
-    digitalWrite(ledPause, LOW);
+    //digitalWrite(ledPause, LOW);
       
 
     if (holdDurationOUT < HOLD_TIME) {
       // removed before 3 seconds = pause/play
       Serial.println("P");
-      digitalWrite(ledPause, HIGH);
+      digitalWrite(ledPause, !digitalRead(ledPause));
       //Serial.print(holdDurationOUT);
     }
 
@@ -129,7 +129,7 @@ void loop () {
         digitalWrite(ledVolume, LOW);
         
       } 
-      else if (NEAR_ZONE < current < FAR_ZONE) {
+      else if (current >= NEAR_ZONE && current < FAR_ZONE) {
         //set mode
         currentMode = 0;
 
