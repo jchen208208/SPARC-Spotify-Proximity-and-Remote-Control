@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SERIAL_PORT = "/dev/cu.usbmodem144302"
+SERIAL_PORT = "COM3"
 BAUD_RATE = 9600
 
 TEST_MODE = False
