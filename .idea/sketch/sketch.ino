@@ -11,8 +11,8 @@ const float ZONE1_MAX = 15.0;  // Zone 1: 2-15cm  → track control
 const float ZONE2_MAX = 30.0;  // Zone 2: 15-30cm → volume control
 
 // Gesture timing
-const unsigned long HOLD_TIME = 1000;         // 1s hold triggers P
-const unsigned long DOUBLE_PASS_WINDOW = 750; // ms window to complete a double pass
+const unsigned long HOLD_TIME = 300;         // 1s hold triggers P
+const unsigned long DOUBLE_PASS_WINDOW = 350; // ms window to complete a double pass
 const unsigned long READ_INTERVAL = 25;
 
 // 6 consecutive out-of-range readings (150ms) required to confirm hand is gone
@@ -40,7 +40,6 @@ unsigned long lastReadTime = 0;
 
 float readDistanceCm() {
   digitalWrite(triggerPin, LOW);
-@ -55,111 +44,109 @@ float readDistanceCm() {
   digitalWrite(triggerPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(triggerPin, LOW);
