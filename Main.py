@@ -1,7 +1,9 @@
+import os
 import time
 import spotipy
 import serial
 from spotipy.oauth2 import SpotifyOAuth
+from spotipy.cache_handler import MemoryCacheHandler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,9 +19,22 @@ VOLUME_STEP = 10  # percent change per V+/V- command
 
 
 def get_client():
+    required_vars = ["SPOTIPY_CLIENT_ID", "SPOTIPY_CLIENT_SECRET", "SPOTIPY_REDIRECT_URI"]
+    missing = [v for v in required_vars if not os.getenv(v)]
+    if missing:
+        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+    token_info = {
+        "access_token": os.getenv("SPOTIFY_ACCESS_TOKEN"),
+        "token_type": os.getenv("SPOTIFY_TOKEN_TYPE", "Bearer"),
+        "refresh_token": os.getenv("SPOTIFY_REFRESH_TOKEN"),
+        "expires_at": 0,  # force spotipy to refresh immediately rather than trust a stale token
+        "scope": SCOPE,
+    }
+    cache_handler = MemoryCacheHandler(token_info=token_info)
     auth_manager = SpotifyOAuth(
         scope=SCOPE,
-        cache_path=".spotify_cache",
+        cache_handler=cache_handler,
     )
     return spotipy.Spotify(auth_manager=auth_manager)
 
@@ -118,11 +133,13 @@ def main():
             line = ser.readline().decode("utf-8", errors="ignore").strip()
             if not line:
                 continue  # no data this cycle
+
             cmd = line.upper()
             action = COMMANDS.get(cmd)
             if not action:
                 print(f"Unrecognized input from Arduino: '{line}'")
                 continue
+
             try:
                 action(sp)
             except spotipy.exceptions.SpotifyException as e:
