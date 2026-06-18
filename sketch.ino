@@ -39,7 +39,7 @@ const int READ_INTERVAL = 50; // read every 50ms instead of blocking
 //constants for the zones
 const int NEAR_ZONE = 50;   // 2-15cm = skip mode
 const int FAR_ZONE = 100;    // 15-30cm = volume mode
-const int HOLD_TIME = 2000; // 3 seconds in ms
+const int HOLD_TIME = 2000; // 2 seconds in ms
 const int COOLDOWN_MS = 1000;
 unsigned long lastModeSwitch = 0;
 
