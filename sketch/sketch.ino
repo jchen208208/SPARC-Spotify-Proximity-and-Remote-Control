@@ -11,7 +11,7 @@ const float ZONE1_MAX = 15.0;  // Zone 1: 2-15cm  → track control
 const float ZONE2_MAX = 30.0;  // Zone 2: 15-30cm → volume control
 
 // Gesture timing
-const unsigned long HOLD_TIME = 1000;         // 1s hold triggers P
+const unsigned long HOLD_TIME = 500;         // 1s hold triggers P
 const unsigned long DOUBLE_PASS_WINDOW = 750; // ms window to complete a double pass
 const unsigned long READ_INTERVAL = 25;
 
