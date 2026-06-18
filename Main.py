@@ -14,6 +14,7 @@ SERIAL_PORT = "YOUR_SERIAL_PORT_HERE"  # e.g. "COM3" or "/dev/ttyUSB0"
 BAUD_RATE = 9600
 # --------------------------------------------------------------
 
+TEST_MODE = True  # set ts back to False once we have the Arduino
 SCOPE = "user-modify-playback-state user-read-playback-state"
 VOLUME_STEP = 10  # percent change per V+/V- command
 
@@ -86,6 +87,26 @@ COMMANDS = {
 
 def main():
     sp = get_client()
+
+    if TEST_MODE:
+        print("TEST MODE: type commands (S+, S-, V+, V-, P) and press Enter. Ctrl+C to quit.")
+        try:
+            while True:
+                line = input("> ").strip()
+                if not line:
+                    continue
+                cmd = line.upper()
+                action = COMMANDS.get(cmd)
+                if not action:
+                    print(f"Unrecognized input: '{line}'")
+                    continue
+                try:
+                    action(sp)
+                except spotipy.exceptions.SpotifyException as e:
+                    print(f"Spotify API error: {e}")
+        except KeyboardInterrupt:
+            print("\nExiting.")
+        return
 
     print(f"Connecting to Arduino on {SERIAL_PORT} at {BAUD_RATE} baud...")
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
