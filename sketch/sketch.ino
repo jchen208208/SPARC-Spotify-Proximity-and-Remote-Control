@@ -34,6 +34,10 @@ int flashPin = -1;
 unsigned long flashStart = 0;
 const unsigned long FLASH_DURATION = 150;
 
+// Non-blocking reconnect
+unsigned long lastReconnectAttempt = 0;
+const unsigned long RECONNECT_INTERVAL = 2000;
+
 bool handInZone = false;
 int handZone = 0;
 unsigned long handEntryTime = 0;
@@ -87,6 +91,13 @@ void updateVolumeLEDs(int vol) {
   }
 }
 
+// Clears all gesture/volume state. Called on hold (P) and on reconnect,
+// so a dropped connection can never leave volumeActive permanently stuck.
+void resetGestureState() {
+  passCount = 0;
+  volumeActive = false;
+}
+
 void setup() {
   Serial.begin(9600);
   WiFi.begin(SSID, PASS);
@@ -102,10 +113,20 @@ void setup() {
 }
 
 void loop() {
+  // Non-blocking reconnect: don't stall the sensor loop with delay(500).
+  // Also reset gesture state so a dropped connection can't leave
+  // volumeActive stuck true forever (previously only "VS" or a hold
+  // could clear it).
   if (!client.connected()) {
-  client.stop();
-  client.connect(HOST, PORT);
-  delay(500);
+    if (millis() - lastReconnectAttempt >= RECONNECT_INTERVAL) {
+      client.stop();
+      client.connect(HOST, PORT);
+      lastReconnectAttempt = millis();
+      resetGestureState();
+      handInZone = false;
+      outOfRangeCount = 0;
+    }
+    return; // skip sensor/gesture work entirely while disconnected
   }
 
   if (client.available()) {
@@ -154,8 +175,10 @@ void loop() {
         // Double pass
         if (passZone == 1) {
           client.println("S-");
+          Serial.println("SENT: S-");
         } else {
           client.println("V-");
+          Serial.println("SENT: V-");
           volumeActive = true;
         }
         passCount = 0;
@@ -172,11 +195,11 @@ void loop() {
     // Check for hold
     if (!holdFired && millis() - handEntryTime >= HOLD_TIME) {
       client.println("P");
+      Serial.println("SENT: P");
       flashLed(ledPause);
       holdFired = true;
-      passCount = 0;
       // P always clears volume state
-      volumeActive = false;
+      resetGestureState();
     }
   }
 
@@ -184,8 +207,10 @@ void loop() {
   if (!handInZone && passCount == 1 && !volumeActive && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
     if (passZone == 1) {
       client.println("S+");
+      Serial.println("SENT: S+");
     } else {
       client.println("V+");
+      Serial.println("SENT: V+");
       volumeActive = true;
     }
     passCount = 0;
