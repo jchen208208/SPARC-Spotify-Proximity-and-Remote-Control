@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 if sys.platform == "darwin":
-    SERIAL_PORT = "/dev/cu.usbmodem144302"
+    SERIAL_PORT = "/dev/cu.usbmodem144301"
 elif sys.platform == "win32":
     SERIAL_PORT = "COM3"
 elif sys.platform.startswith("linux"):
@@ -29,7 +29,7 @@ VOLUME_INTERVAL = 0.2  # seconds between ticks
 
 pygame.mixer.init()
 
-ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SPARC_assets")
+ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SPARC_assets_wired")
 SOUND_CONNECTED = os.path.join(ASSET_DIR, "connected.mp3")
 SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
 
