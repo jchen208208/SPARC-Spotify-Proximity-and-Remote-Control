@@ -20,6 +20,7 @@ elif sys.platform.startswith("linux"):
     SERIAL_PORT = "/dev/ttyACM0"
 else:
     raise RuntimeError(f"Unsupported platform: {sys.platform}")
+
 BAUD_RATE = 9600
 SCOPE = "user-modify-playback-state user-read-playback-state"
 
@@ -28,8 +29,9 @@ VOLUME_INTERVAL = 0.2  # seconds between ticks
 
 pygame.mixer.init()
 
-SOUND_CONNECTED = "connected.mp3"
-SOUND_DISCONNECTED = "disconnected.mp3"
+ASSET_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "SPARC_assets")
+SOUND_CONNECTED = os.path.join(ASSET_DIR, "connected.mp3")
+SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
 
 
 def play_sound(path):
@@ -70,7 +72,6 @@ def _ramp_volume(sp, direction, ser):
         print(f"  Volume error: {e}")
         return
 
-    # Already at the limit, do nothing
     if (direction == 1 and current >= 100) or (direction == -1 and current <= 0):
         _volume_stop.set()
         ser.write(b"VS\n")
@@ -84,7 +85,7 @@ def _ramp_volume(sp, direction, ser):
             print(f"  Volume: {current}%")
             if current in (0, 100):
                 _volume_stop.set()
-                ser.write(b"VS\n")  # tell Arduino volume is done
+                ser.write(b"VS\n")
                 break
         except Exception as e:
             print(f"  Volume error: {e}")
@@ -93,7 +94,7 @@ def _ramp_volume(sp, direction, ser):
 
 def start_volume(sp, direction, ser):
     global _volume_thread
-    _volume_stop.set()  # stop any existing ramp
+    _volume_stop.set()
     _volume_thread = threading.Thread(target=_ramp_volume, args=(sp, direction, ser), daemon=True)
     _volume_thread.start()
 
@@ -103,7 +104,9 @@ def stop_volume():
 
 
 def volume_active():
-    return _volume_thread is not None and _volume_thread.is_alive()
+    if _volume_thread is None:
+        return False
+    return _volume_thread.is_alive()
 
 
 # --- Spotify actions ---
@@ -114,8 +117,22 @@ def next_track(sp):
 
 
 def prev_track(sp):
-    sp.previous_track()
-    print("  Previous track")
+    try:
+        playback = sp.current_playback()
+        if not playback:
+            return
+        position = playback.get("progress_ms", 0)
+        if position > 3000:
+            sp.seek_track(0)
+            print("  Restarted track")
+        else:
+            sp.previous_track()
+            print("  Previous track")
+    except spotipy.exceptions.SpotifyException as e:
+        if "403" in str(e):
+            print("  Previous track unavailable")
+        else:
+            raise
 
 
 def toggle_pause(sp):
@@ -133,10 +150,20 @@ def toggle_pause(sp):
 def handle_stop(sp, ser):
     if volume_active():
         stop_volume()
-        ser.write(b"VS\n")  # tell Arduino volume is done
+        ser.write(b"VS\n")
         print("  Volume stopped")
     else:
         toggle_pause(sp)
+
+
+def get_handlers(ser):
+    return {
+        "S+": lambda sp: next_track(sp),
+        "S-": lambda sp: prev_track(sp),
+        "V+": lambda sp: start_volume(sp, +1, ser),
+        "V-": lambda sp: start_volume(sp, -1, ser),
+        "P":  lambda sp: handle_stop(sp, ser),
+    }
 
 
 def main():
@@ -146,31 +173,60 @@ def main():
     try:
         user = sp.current_user()
         print(f"Logged in as: {user['display_name']}\n")
-        play_sound(SOUND_CONNECTED)  # ADD THIS
     except Exception as e:
         print(f"Spotify auth failed: {e}")
-        play_sound(SOUND_DISCONNECTED)  # ADD THIS
         return
 
-    print(f"Connecting to Arduino on {SERIAL_PORT}...")
-    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-    time.sleep(2)
-    ser.reset_input_buffer()
-    print("Connected. Listening (Ctrl+C to quit)...\n")
+    ser = None
+    arduino_connected = False
+    spotify_connected = False
+    was_connected = False
+    HANDLERS = {}
 
-    HANDLERS = {
-        "S+": lambda sp: next_track(sp),
-        "S-": lambda sp: prev_track(sp),
-        "V+": lambda sp: start_volume(sp, +1, ser),
-        "V-": lambda sp: start_volume(sp, -1, ser),
-        "P":  lambda sp: handle_stop(sp, ser),
-    }
+    while True:
+        # --- Arduino reconnect ---
+        if ser is None or not ser.is_open:
+            try:
+                ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+                time.sleep(2)
+                ser.reset_input_buffer()
+                HANDLERS = get_handlers(ser)
+                arduino_connected = True
+                print("Arduino found.")
+                try:
+                    devices = sp.devices().get("devices", [])
+                    spotify_connected = bool(devices)
+                except Exception:
+                    spotify_connected = False
+            except serial.SerialException:
+                arduino_connected = False
+                time.sleep(2)
 
-    try:
-        while True:
+        # --- Evaluate combined state ---
+        both_connected = arduino_connected and spotify_connected
+        if both_connected and not was_connected:
+            print("Connected.")
+            play_sound(SOUND_CONNECTED)
+            was_connected = True
+        elif not both_connected and was_connected:
+            print("Disconnected.")
+            play_sound(SOUND_DISCONNECTED)
+            was_connected = False
+
+        if not arduino_connected:
+            continue
+
+        # --- Main loop ---
+        try:
             line = ser.readline().decode("utf-8", errors="ignore").strip()
             if not line:
+                try:
+                    devices = sp.devices().get("devices", [])
+                    spotify_connected = bool(devices)
+                except Exception:
+                    spotify_connected = False
                 continue
+
             print(f"← {line}")
             handler = HANDLERS.get(line)
             if handler:
@@ -182,11 +238,22 @@ def main():
                     print(f"  Error: {e}")
             else:
                 print(f"  [unrecognized] {repr(line)}")
-    except KeyboardInterrupt:
-        print("\nExiting.")
-        stop_volume()
-    finally:
-        ser.close()
+
+        except serial.SerialException:
+            print("Arduino disconnected.")
+            arduino_connected = False
+            try:
+                ser.close()
+            except Exception:
+                pass
+            ser = None
+
+        except KeyboardInterrupt:
+            print("\nExiting.")
+            stop_volume()
+            if ser:
+                ser.close()
+            break
 
 
 if __name__ == "__main__":
