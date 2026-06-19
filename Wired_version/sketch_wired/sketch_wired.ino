@@ -5,6 +5,9 @@ const int ledPause = 4;
 
 // Volume bar LEDs (5 new LEDs)
 const int volLeds[5] = {5, 6, 7, 8, 9};
+int lastVol = -1;
+unsigned long lastVolTime = 0;
+const unsigned long VOL_DEBOUNCE = 200;
 
 // Zone boundaries in cm
 const float DETECT_MIN = 2.0;
@@ -93,9 +96,19 @@ void loop() {
     msg.trim();
     if (msg == "VS") {
       volumeActive = false;
+    } else if (msg.startsWith("VOLF")) {
+      // Forced update from Python after ramp stop — bypass debounce, always render
+      int vol = msg.substring(4).toInt();
+      lastVol = vol;
+      lastVolTime = millis();
+      updateVolumeLEDs(vol);
     } else if (msg.startsWith("VOL")) {
       int vol = msg.substring(3).toInt();
-      updateVolumeLEDs(vol);
+      if (vol != lastVol && millis() - lastVolTime > VOL_DEBOUNCE) {
+        lastVol = vol;
+        lastVolTime = millis();
+        updateVolumeLEDs(vol);
+      }
     }
   }
 

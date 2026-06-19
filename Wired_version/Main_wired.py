@@ -15,7 +15,7 @@ load_dotenv()
 if sys.platform == "darwin":
     SERIAL_PORT = "/dev/cu.usbmodem144301"
 elif sys.platform == "win32":
-    SERIAL_PORT = "COM3"
+    SERIAL_PORT = "COM4"
 elif sys.platform.startswith("linux"):
     SERIAL_PORT = "/dev/ttyACM0"
 else:
@@ -67,9 +67,11 @@ def send_current_volume(sp, ser):
 
 _volume_stop = threading.Event()
 _volume_thread = None
+_last_ramped_volume = None  # tracks the last volume value set during a ramp
 
 
 def _ramp_volume(sp, direction, ser):
+    global _last_ramped_volume
     _volume_stop.clear()
     try:
         playback = sp.current_playback()
@@ -92,8 +94,10 @@ def _ramp_volume(sp, direction, ser):
         try:
             current = max(0, min(100, current + direction * VOLUME_STEP))
             sp.volume(int(current), device_id=device_id)
+            _last_ramped_volume = int(current)  # track last ramp value
             print(f"  Volume: {current}%")
             ser.write(f"VOL{int(current)}\n".encode())
+            ser.flush()
             if current in (0, 100):
                 _volume_stop.set()
                 ser.write(b"VS\n")
@@ -167,9 +171,17 @@ def toggle_pause(sp, ser):
 def handle_stop(sp, ser):
     if volume_active():
         stop_volume()
-        ser.write(b"VS\n")
-        send_current_volume(sp, ser)
-        print("  Volume stopped")
+        _volume_thread.join()
+        ser.reset_input_buffer()
+        # Send the exact last ramp value directly — avoids Spotify API lag and debounce blocking
+        if _last_ramped_volume is not None:
+            ser.write(f"VOLF{_last_ramped_volume}\n".encode())
+            ser.flush()
+            print(f"  Volume stopped at {_last_ramped_volume}%")
+        else:
+            time.sleep(0.5)
+            send_current_volume(sp, ser)
+            print("  Volume stopped")
     else:
         toggle_pause(sp, ser)
 
@@ -206,6 +218,9 @@ def main():
         if ser is None or not ser.is_open:
             try:
                 ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+                ser.setDTR(False)
+                time.sleep(0.1)
+                ser.setDTR(True)
                 time.sleep(2)
                 ser.reset_input_buffer()
                 HANDLERS = get_handlers(ser)
