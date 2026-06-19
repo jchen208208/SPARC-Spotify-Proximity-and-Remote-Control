@@ -13,7 +13,7 @@ BAUD_RATE = 9600
 SCOPE = "user-modify-playback-state user-read-playback-state"
 
 VOLUME_STEP = 5        # % per tick while ramping
-VOLUME_INTERVAL = 0.1  # seconds between ticks
+VOLUME_INTERVAL = 0.2  # seconds between ticks
 
 
 def get_spotify():
@@ -165,4 +165,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
