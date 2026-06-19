@@ -12,7 +12,7 @@ SERIAL_PORT = "COM3"
 BAUD_RATE = 9600
 SCOPE = "user-modify-playback-state user-read-playback-state"
 
-VOLUME_STEP = 10        # % per tick while ramping
+VOLUME_STEP = 5        # % per tick while ramping
 VOLUME_INTERVAL = 0.1  # seconds between ticks
 
 
@@ -33,29 +33,44 @@ _volume_stop = threading.Event()
 _volume_thread = None
 
 
-def _ramp_volume(sp, direction):
+def _ramp_volume(sp, direction, ser):
     _volume_stop.clear()
+    try:
+        playback = sp.current_playback()
+        if not playback or not playback.get("device"):
+            return
+        device = playback["device"]
+        current = device.get("volume_percent", 50)
+        device_id = device["id"]
+    except Exception as e:
+        print(f"  Volume error: {e}")
+        return
+
+    # Already at the limit, do nothing
+    if (direction == 1 and current >= 100) or (direction == -1 and current <= 0):
+        _volume_stop.set()
+        ser.write(b"VS\n")
+        print(f"  Already at {'max' if direction == 1 else 'min'} volume")
+        return
+
     while not _volume_stop.wait(VOLUME_INTERVAL):
         try:
-            playback = sp.current_playback()
-            if not playback or not playback.get("device"):
-                break
-            device = playback["device"]
-            current = device.get("volume_percent", 50)
-            new_vol = max(0, min(100, current + direction * VOLUME_STEP))
-            sp.volume(new_vol, device_id=device["id"])
-            print(f"  Volume: {new_vol}%")
-            if new_vol in (0, 100):
+            current = max(0, min(100, current + direction * VOLUME_STEP))
+            sp.volume(int(current), device_id=device_id)
+            print(f"  Volume: {current}%")
+            if current in (0, 100):
+                _volume_stop.set()
+                ser.write(b"VS\n")  # tell Arduino volume is done
                 break
         except Exception as e:
             print(f"  Volume error: {e}")
             break
 
 
-def start_volume(sp, direction):
+def start_volume(sp, direction, ser):
     global _volume_thread
     _volume_stop.set()  # stop any existing ramp
-    _volume_thread = threading.Thread(target=_ramp_volume, args=(sp, direction), daemon=True)
+    _volume_thread = threading.Thread(target=_ramp_volume, args=(sp, direction, ser), daemon=True)
     _volume_thread.start()
 
 
@@ -91,28 +106,18 @@ def toggle_pause(sp):
         print("  Resumed")
 
 
-def handle_stop(sp):
+def handle_stop(sp, ser):
     if volume_active():
         stop_volume()
+        ser.write(b"VS\n")  # tell Arduino volume is done
         print("  Volume stopped")
     else:
         toggle_pause(sp)
 
 
-HANDLERS = {
-    "S+": lambda sp: next_track(sp),
-    "S-": lambda sp: prev_track(sp),
-    "V+": lambda sp: start_volume(sp, +1),
-    "V-": lambda sp: start_volume(sp, -1),
-    "P":  lambda sp: handle_stop(sp),
-}
-
-
 def main():
     sp = get_spotify()
 
-    # Force auth before opening serial so the browser flow
-    # completes while the terminal is free
     print("Connecting to Spotify...")
     try:
         user = sp.current_user()
@@ -126,6 +131,14 @@ def main():
     time.sleep(2)
     ser.reset_input_buffer()
     print("Connected. Listening (Ctrl+C to quit)...\n")
+
+    HANDLERS = {
+        "S+": lambda sp: next_track(sp),
+        "S-": lambda sp: prev_track(sp),
+        "V+": lambda sp: start_volume(sp, +1, ser),
+        "V-": lambda sp: start_volume(sp, -1, ser),
+        "P":  lambda sp: handle_stop(sp, ser),
+    }
 
     try:
         while True:
@@ -152,3 +165,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
