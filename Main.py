@@ -53,6 +53,16 @@ def get_spotify():
     return spotipy.Spotify(auth_manager=auth)
 
 
+def send_current_volume(sp, ser):
+    try:
+        playback = sp.current_playback()
+        if playback and playback.get("device"):
+            vol = playback["device"].get("volume_percent", 0)
+            ser.write(f"VOL{vol}\n".encode())
+    except Exception:
+        pass
+
+
 # --- Volume ramping (background thread) ---
 
 _volume_stop = threading.Event()
@@ -83,6 +93,7 @@ def _ramp_volume(sp, direction, ser):
             current = max(0, min(100, current + direction * VOLUME_STEP))
             sp.volume(int(current), device_id=device_id)
             print(f"  Volume: {current}%")
+            ser.write(f"VOL{int(current)}\n".encode())
             if current in (0, 100):
                 _volume_stop.set()
                 ser.write(b"VS\n")
@@ -111,12 +122,14 @@ def volume_active():
 
 # --- Spotify actions ---
 
-def next_track(sp):
+def next_track(sp, ser):
     sp.next_track()
     print("  Next track")
+    time.sleep(0.3)
+    send_current_volume(sp, ser)
 
 
-def prev_track(sp):
+def prev_track(sp, ser):
     try:
         playback = sp.current_playback()
         if not playback:
@@ -133,9 +146,11 @@ def prev_track(sp):
             print("  Previous track unavailable")
         else:
             raise
+    time.sleep(0.3)
+    send_current_volume(sp, ser)
 
 
-def toggle_pause(sp):
+def toggle_pause(sp, ser):
     playback = sp.current_playback()
     if playback and playback.get("is_playing"):
         sp.pause_playback()
@@ -145,21 +160,24 @@ def toggle_pause(sp):
         device_id = devices[0]["id"] if devices else None
         sp.start_playback(device_id=device_id)
         print("  Resumed")
+    time.sleep(0.3)
+    send_current_volume(sp, ser)
 
 
 def handle_stop(sp, ser):
     if volume_active():
         stop_volume()
         ser.write(b"VS\n")
+        send_current_volume(sp, ser)
         print("  Volume stopped")
     else:
-        toggle_pause(sp)
+        toggle_pause(sp, ser)
 
 
 def get_handlers(ser):
     return {
-        "S+": lambda sp: next_track(sp),
-        "S-": lambda sp: prev_track(sp),
+        "S+": lambda sp: next_track(sp, ser),
+        "S-": lambda sp: prev_track(sp, ser),
         "V+": lambda sp: start_volume(sp, +1, ser),
         "V-": lambda sp: start_volume(sp, -1, ser),
         "P":  lambda sp: handle_stop(sp, ser),
@@ -207,6 +225,7 @@ def main():
         if both_connected and not was_connected:
             print("Connected.")
             play_sound(SOUND_CONNECTED)
+            send_current_volume(sp, ser)
             was_connected = True
         elif not both_connected and was_connected:
             print("Disconnected.")
