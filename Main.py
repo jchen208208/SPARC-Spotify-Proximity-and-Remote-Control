@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import threading
 import serial
@@ -8,7 +9,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SERIAL_PORT = "COM3"
+if sys.platform == "darwin":
+    SERIAL_PORT = "/dev/cu.usbmodem144302"
+elif sys.platform == "win32":
+    SERIAL_PORT = "COM3"
+elif sys.platform.startswith("linux"):
+    SERIAL_PORT = "/dev/ttyACM0"
+else:
+    raise RuntimeError(f"Unsupported platform: {sys.platform}")
 BAUD_RATE = 9600
 SCOPE = "user-modify-playback-state user-read-playback-state"
 
