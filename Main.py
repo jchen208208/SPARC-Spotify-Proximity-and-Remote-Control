@@ -45,10 +45,12 @@ def get_spotify():
 
 
 def send_current_volume(sp, conn):
+    global _last_volume
     try:
         playback = sp.current_playback()
         if playback and playback.get("device"):
             vol = playback["device"].get("volume_percent", 0)
+            _last_volume = vol
             conn.sendall(f"VOL{vol}\n".encode())
     except Exception:
         pass
@@ -58,9 +60,11 @@ def send_current_volume(sp, conn):
 
 _volume_stop = threading.Event()
 _volume_thread = None
+_last_volume = 50
 
 
 def _ramp_volume(sp, direction, conn):
+    global _last_volume
     _volume_stop.clear()
     try:
         playback = sp.current_playback()
@@ -85,6 +89,7 @@ def _ramp_volume(sp, direction, conn):
             sp.volume(int(current), device_id=device_id)
             print(f"  Volume: {current}%")
             conn.sendall(f"VOL{int(current)}\n".encode())
+            _last_volume = int(current)
             if current in (0, 100):
                 _volume_stop.set()
                 conn.sendall(b"VS\n")
@@ -158,9 +163,11 @@ def toggle_pause(sp, conn):
 def handle_stop(sp, conn):
     if volume_active():
         stop_volume()
+        if _volume_thread:
+            _volume_thread.join(timeout=1.0)
         conn.sendall(b"VS\n")
-        send_current_volume(sp, conn)
-        print("  Volume stopped")
+        conn.sendall(f"VOL{_last_volume}\n".encode())
+        print(f"  Volume stopped at {_last_volume}%")
     else:
         toggle_pause(sp, conn)
 
