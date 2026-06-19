@@ -4,6 +4,9 @@ import time
 import threading
 import serial
 import spotipy
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
+
+import pygame
 from spotipy.oauth2 import SpotifyOAuth
 from dotenv import load_dotenv
 
@@ -22,6 +25,19 @@ SCOPE = "user-modify-playback-state user-read-playback-state"
 
 VOLUME_STEP = 5        # % per tick while ramping
 VOLUME_INTERVAL = 0.2  # seconds between ticks
+
+pygame.mixer.init()
+
+SOUND_CONNECTED = "connected.mp3"
+SOUND_DISCONNECTED = "disconnected.mp3"
+
+
+def play_sound(path):
+    try:
+        pygame.mixer.music.load(path)
+        pygame.mixer.music.play()
+    except Exception as e:
+        print(f"  Sound error: {e}")
 
 
 def get_spotify():
@@ -130,8 +146,10 @@ def main():
     try:
         user = sp.current_user()
         print(f"Logged in as: {user['display_name']}\n")
+        play_sound(SOUND_CONNECTED)  # ADD THIS
     except Exception as e:
         print(f"Spotify auth failed: {e}")
+        play_sound(SOUND_DISCONNECTED)  # ADD THIS
         return
 
     print(f"Connecting to Arduino on {SERIAL_PORT}...")
