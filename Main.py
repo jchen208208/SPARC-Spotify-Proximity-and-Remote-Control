@@ -58,6 +58,7 @@ def send_current_volume(sp, conn):
 
 _volume_stop = threading.Event()
 _volume_thread = None
+_volume_lock = threading.Lock()
 
 
 def _ramp_volume(sp, direction, conn):
@@ -96,9 +97,16 @@ def _ramp_volume(sp, direction, conn):
 
 def start_volume(sp, direction, conn):
     global _volume_thread
-    _volume_stop.set()
-    _volume_thread = threading.Thread(target=_ramp_volume, args=(sp, direction, conn), daemon=True)
-    _volume_thread.start()
+    with _volume_lock:
+        _volume_stop.set()
+        # Wait for any previous ramp thread to actually exit before
+        # starting a new one. Without this join, a fast V+ -> V- (or
+        # vice versa) could leave two ramp threads alive briefly, both
+        # calling sp.volume()/conn.sendall() in opposite directions.
+        if _volume_thread is not None and _volume_thread.is_alive():
+            _volume_thread.join(timeout=0.5)
+        _volume_thread = threading.Thread(target=_ramp_volume, args=(sp, direction, conn), daemon=True)
+        _volume_thread.start()
 
 
 def stop_volume():
@@ -158,8 +166,14 @@ def toggle_pause(sp, conn):
 def handle_stop(sp, conn):
     if volume_active():
         stop_volume()
+        # Wait for the ramp thread to fully exit before announcing VS.
+        # The thread already sent the correct final VOL<n> on its last
+        # tick; re-querying Spotify here can return a stale value
+        # (API propagation lag) that overwrites the correct LED state
+        # with an old number once it arrives after the real VOL.
+        if _volume_thread is not None:
+            _volume_thread.join(timeout=0.5)
         conn.sendall(b"VS\n")
-        send_current_volume(sp, conn)
         print("  Volume stopped")
     else:
         toggle_pause(sp, conn)
