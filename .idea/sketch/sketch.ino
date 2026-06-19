@@ -1,3 +1,13 @@
+#include <WiFiNINA.h>
+#include "arduino_secrets.h"
+
+const char SSID[] = SECRET_SSID;
+const char PASS[] = SECRET_PASS;
+const char HOST[] = SECRET_HOST;
+const int PORT = 5000;
+
+WiFiClient client;
+
 const byte triggerPin = 13;
 const byte echoPin = 12;
 
@@ -79,6 +89,10 @@ void updateVolumeLEDs(int vol) {
 
 void setup() {
   Serial.begin(9600);
+  WiFi.begin(SSID, PASS);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
+  Serial.println("WiFi connected");
+  client.connect(HOST, PORT);
   pinMode(triggerPin, OUTPUT);
   pinMode(echoPin, INPUT);
   pinMode(ledPause, OUTPUT);
@@ -88,8 +102,14 @@ void setup() {
 }
 
 void loop() {
-  if (Serial.available()) {
-    String msg = Serial.readStringUntil('\n');
+  if (!client.connected()) {
+  client.stop();
+  client.connect(HOST, PORT);
+  delay(500);
+  }
+
+  if (client.available()) {
+    String msg = client.readStringUntil('\n');
     msg.trim();
     if (msg == "VS") {
       volumeActive = false;
@@ -133,9 +153,9 @@ void loop() {
       } else if (passCount == 1 && handZone == passZone && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
         // Double pass
         if (passZone == 1) {
-          Serial.println("S-");
+          client.println("S-");
         } else {
-          Serial.println("V-");
+          client.println("V-");
           volumeActive = true;
         }
         passCount = 0;
@@ -151,7 +171,7 @@ void loop() {
   else if (inZone && handInZone) {
     // Check for hold
     if (!holdFired && millis() - handEntryTime >= HOLD_TIME) {
-      Serial.println("P");
+      client.println("P");
       flashLed(ledPause);
       holdFired = true;
       passCount = 0;
@@ -163,9 +183,9 @@ void loop() {
   // Confirm single pass once double-pass window expires
   if (!handInZone && passCount == 1 && !volumeActive && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
     if (passZone == 1) {
-      Serial.println("S+");
+      client.println("S+");
     } else {
-      Serial.println("V+");
+      client.println("V+");
       volumeActive = true;
     }
     passCount = 0;

@@ -2,7 +2,7 @@ import os
 import sys
 import time
 import threading
-import serial
+import socket
 import spotipy
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 
@@ -12,16 +12,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-if sys.platform == "darwin":
-    SERIAL_PORT = "/dev/cu.usbmodem144302"
-elif sys.platform == "win32":
-    SERIAL_PORT = "COM3"
-elif sys.platform.startswith("linux"):
-    SERIAL_PORT = "/dev/ttyACM0"
-else:
-    raise RuntimeError(f"Unsupported platform: {sys.platform}")
-
-BAUD_RATE = 9600
+PORT = 5000
 SCOPE = "user-modify-playback-state user-read-playback-state"
 
 VOLUME_STEP = 5        # % per tick while ramping
@@ -53,12 +44,12 @@ def get_spotify():
     return spotipy.Spotify(auth_manager=auth)
 
 
-def send_current_volume(sp, ser):
+def send_current_volume(sp, conn):
     try:
         playback = sp.current_playback()
         if playback and playback.get("device"):
             vol = playback["device"].get("volume_percent", 0)
-            ser.write(f"VOL{vol}\n".encode())
+            conn.sendall(f"VOL{vol}\n".encode())
     except Exception:
         pass
 
@@ -69,7 +60,7 @@ _volume_stop = threading.Event()
 _volume_thread = None
 
 
-def _ramp_volume(sp, direction, ser):
+def _ramp_volume(sp, direction, conn):
     _volume_stop.clear()
     try:
         playback = sp.current_playback()
@@ -84,7 +75,7 @@ def _ramp_volume(sp, direction, ser):
 
     if (direction == 1 and current >= 100) or (direction == -1 and current <= 0):
         _volume_stop.set()
-        ser.write(b"VS\n")
+        conn.sendall(b"VS\n")
         print(f"  Already at {'max' if direction == 1 else 'min'} volume")
         return
 
@@ -93,20 +84,20 @@ def _ramp_volume(sp, direction, ser):
             current = max(0, min(100, current + direction * VOLUME_STEP))
             sp.volume(int(current), device_id=device_id)
             print(f"  Volume: {current}%")
-            ser.write(f"VOL{int(current)}\n".encode())
+            conn.sendall(f"VOL{int(current)}\n".encode())
             if current in (0, 100):
                 _volume_stop.set()
-                ser.write(b"VS\n")
+                conn.sendall(b"VS\n")
                 break
         except Exception as e:
             print(f"  Volume error: {e}")
             break
 
 
-def start_volume(sp, direction, ser):
+def start_volume(sp, direction, conn):
     global _volume_thread
     _volume_stop.set()
-    _volume_thread = threading.Thread(target=_ramp_volume, args=(sp, direction, ser), daemon=True)
+    _volume_thread = threading.Thread(target=_ramp_volume, args=(sp, direction, conn), daemon=True)
     _volume_thread.start()
 
 
@@ -122,14 +113,14 @@ def volume_active():
 
 # --- Spotify actions ---
 
-def next_track(sp, ser):
+def next_track(sp, conn):
     sp.next_track()
     print("  Next track")
     time.sleep(0.3)
-    send_current_volume(sp, ser)
+    send_current_volume(sp, conn)
 
 
-def prev_track(sp, ser):
+def prev_track(sp, conn):
     try:
         playback = sp.current_playback()
         if not playback:
@@ -147,10 +138,10 @@ def prev_track(sp, ser):
         else:
             raise
     time.sleep(0.3)
-    send_current_volume(sp, ser)
+    send_current_volume(sp, conn)
 
 
-def toggle_pause(sp, ser):
+def toggle_pause(sp, conn):
     playback = sp.current_playback()
     if playback and playback.get("is_playing"):
         sp.pause_playback()
@@ -161,26 +152,26 @@ def toggle_pause(sp, ser):
         sp.start_playback(device_id=device_id)
         print("  Resumed")
     time.sleep(0.3)
-    send_current_volume(sp, ser)
+    send_current_volume(sp, conn)
 
 
-def handle_stop(sp, ser):
+def handle_stop(sp, conn):
     if volume_active():
         stop_volume()
-        ser.write(b"VS\n")
-        send_current_volume(sp, ser)
+        conn.sendall(b"VS\n")
+        send_current_volume(sp, conn)
         print("  Volume stopped")
     else:
-        toggle_pause(sp, ser)
+        toggle_pause(sp, conn)
 
 
-def get_handlers(ser):
+def get_handlers(conn):
     return {
-        "S+": lambda sp: next_track(sp, ser),
-        "S-": lambda sp: prev_track(sp, ser),
-        "V+": lambda sp: start_volume(sp, +1, ser),
-        "V-": lambda sp: start_volume(sp, -1, ser),
-        "P":  lambda sp: handle_stop(sp, ser),
+        "S+": lambda sp: next_track(sp, conn),
+        "S-": lambda sp: prev_track(sp, conn),
+        "V+": lambda sp: start_volume(sp, +1, conn),
+        "V-": lambda sp: start_volume(sp, -1, conn),
+        "P":  lambda sp: handle_stop(sp, conn),
     }
 
 
@@ -195,7 +186,12 @@ def main():
         print(f"Spotify auth failed: {e}")
         return
 
-    ser = None
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("0.0.0.0", PORT))
+    server.listen(1)
+
+    conn = None
     arduino_connected = False
     spotify_connected = False
     was_connected = False
@@ -203,29 +199,30 @@ def main():
 
     while True:
         # --- Arduino reconnect ---
-        if ser is None or not ser.is_open:
+        if conn is None:
             try:
-                ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-                time.sleep(2)
-                ser.reset_input_buffer()
-                HANDLERS = get_handlers(ser)
+                print("Waiting for Arduino...")
+                server.settimeout(2)
+                conn, addr = server.accept()
+                conn.settimeout(1)
+                HANDLERS = get_handlers(conn)
                 arduino_connected = True
-                print("Arduino found.")
+                print(f"Arduino connected from {addr}")
                 try:
                     devices = sp.devices().get("devices", [])
                     spotify_connected = bool(devices)
                 except Exception:
                     spotify_connected = False
-            except serial.SerialException:
+            except socket.timeout:
                 arduino_connected = False
-                time.sleep(2)
+                continue
 
         # --- Evaluate combined state ---
         both_connected = arduino_connected and spotify_connected
         if both_connected and not was_connected:
             print("Connected.")
             play_sound(SOUND_CONNECTED)
-            send_current_volume(sp, ser)
+            send_current_volume(sp, conn)
             was_connected = True
         elif not both_connected and was_connected:
             print("Disconnected.")
@@ -237,8 +234,8 @@ def main():
 
         # --- Main loop ---
         try:
-            line = ser.readline().decode("utf-8", errors="ignore").strip()
-            if not line:
+            data = conn.recv(1024).decode("utf-8", errors="ignore").strip()
+            if not data:
                 try:
                     devices = sp.devices().get("devices", [])
                     spotify_connected = bool(devices)
@@ -246,32 +243,45 @@ def main():
                     spotify_connected = False
                 continue
 
-            print(f"← {line}")
-            handler = HANDLERS.get(line)
-            if handler:
-                try:
-                    handler(sp)
-                except spotipy.exceptions.SpotifyException as e:
-                    print(f"  Spotify error: {e}")
-                except Exception as e:
-                    print(f"  Error: {e}")
-            else:
-                print(f"  [unrecognized] {repr(line)}")
+            for line in data.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                print(f"← {line}")
+                handler = HANDLERS.get(line)
+                if handler:
+                    try:
+                        handler(sp)
+                    except spotipy.exceptions.SpotifyException as e:
+                        print(f"  Spotify error: {e}")
+                    except Exception as e:
+                        print(f"  Error: {e}")
+                else:
+                    print(f"  [unrecognized] {repr(line)}")
 
-        except serial.SerialException:
+        except socket.timeout:
+            try:
+                devices = sp.devices().get("devices", [])
+                spotify_connected = bool(devices)
+            except Exception:
+                spotify_connected = False
+
+        except (ConnectionResetError, BrokenPipeError, OSError):
             print("Arduino disconnected.")
             arduino_connected = False
             try:
-                ser.close()
+                conn.close()
             except Exception:
                 pass
-            ser = None
+            conn = None
+            was_connected = False
 
         except KeyboardInterrupt:
             print("\nExiting.")
             stop_volume()
-            if ser:
-                ser.close()
+            if conn:
+                conn.close()
+            server.close()
             break
 
 
