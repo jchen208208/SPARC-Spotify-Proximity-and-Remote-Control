@@ -1,9 +1,10 @@
 const byte triggerPin = 13;
 const byte echoPin = 12;
 
-const int ledSkip = 2;
-const int ledVolume = 3;
 const int ledPause = 4;
+
+// Volume bar LEDs (5 new LEDs)
+const int volLeds[5] = {5, 6, 7, 8, 9};
 
 // Zone boundaries in cm
 const float DETECT_MIN = 2.0;
@@ -62,30 +63,46 @@ void handleFlash() {
   }
 }
 
+// Maps vol (0-100) onto 5 LEDs
+// 0      → all off
+// 1-20   → 1 LED
+// 21-40  → 2 LEDs
+// 41-60  → 3 LEDs
+// 61-80  → 4 LEDs
+// 81-100 → 5 LEDs
+void updateVolumeLEDs(int vol) {
+  int bars = (vol == 0) ? 0 : ((vol - 1) / 20) + 1;
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(volLeds[i], i < bars ? HIGH : LOW);
+  }
+}
+
 void setup() {
   Serial.begin(9600);
   pinMode(triggerPin, OUTPUT);
   pinMode(echoPin, INPUT);
-  pinMode(ledSkip, OUTPUT);
-  pinMode(ledVolume, OUTPUT);
   pinMode(ledPause, OUTPUT);
+  for (int i = 0; i < 5; i++) {
+    pinMode(volLeds[i], OUTPUT);
+  }
 }
 
 void loop() {
-  if (millis() - lastReadTime < READ_INTERVAL) return;
-  lastReadTime = millis();
-
-  handleFlash();
-
-  // Check for messages from Python
   if (Serial.available()) {
     String msg = Serial.readStringUntil('\n');
     msg.trim();
     if (msg == "VS") {
       volumeActive = false;
-      digitalWrite(ledVolume, LOW);
+    } else if (msg.startsWith("VOL")) {
+      int vol = msg.substring(3).toInt();
+      updateVolumeLEDs(vol);
     }
   }
+
+  if (millis() - lastReadTime < READ_INTERVAL) return;
+  lastReadTime = millis();
+
+  handleFlash();
 
   float current = readDistanceCm();
   bool inZone = (current >= DETECT_MIN && current <= ZONE2_MAX);
@@ -117,11 +134,9 @@ void loop() {
         // Double pass
         if (passZone == 1) {
           Serial.println("S-");
-          flashLed(ledSkip);
         } else {
           Serial.println("V-");
           volumeActive = true;
-          digitalWrite(ledVolume, HIGH);
         }
         passCount = 0;
       } else {
@@ -142,7 +157,6 @@ void loop() {
       passCount = 0;
       // P always clears volume state
       volumeActive = false;
-      digitalWrite(ledVolume, LOW);
     }
   }
 
@@ -150,11 +164,9 @@ void loop() {
   if (!handInZone && passCount == 1 && !volumeActive && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
     if (passZone == 1) {
       Serial.println("S+");
-      flashLed(ledSkip);
     } else {
       Serial.println("V+");
       volumeActive = true;
-      digitalWrite(ledVolume, HIGH);
     }
     passCount = 0;
   }
