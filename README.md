@@ -4,6 +4,7 @@
 
 
 A desk-mounted gesture controller that lets you control Spotify hands-free using nothing but hand movements in the air. Built with an Arduino Uno, an HC-SR04 ultrasonic distance sensor, and a Python backend — no touchscreen, no buttons, no phone.
+We plan to scale it into a product best used to control Spotify while driving. As an avid music listener, I find that constantly looking at the dashboard display or your phone to adjust the music while driving is very precarious and inconvenient. With this device, all you have to do is signal hand motions, and our program will take care of all the adjustments for you.
 
 > Built as a hardware/software integration project exploring embedded systems, serial communication, and API-driven automation.
 
