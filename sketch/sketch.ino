@@ -38,6 +38,8 @@ const unsigned long FLASH_DURATION = 150;
 unsigned long lastReconnectAttempt = 0;
 const unsigned long RECONNECT_INTERVAL = 2000;
 
+bool wasConnected = false;
+
 bool handInZone = false;
 int handZone = 0;
 unsigned long handEntryTime = 0;
@@ -118,6 +120,12 @@ void loop() {
   // volumeActive stuck true forever (previously only "VS" or a hold
   // could clear it).
   if (!client.connected()) {
+    if (wasConnected) {
+      updateVolumeLEDs(0);
+      digitalWrite(ledPause, LOW);
+      flashPin = -1;
+      wasConnected = false;
+    }
     if (millis() - lastReconnectAttempt >= RECONNECT_INTERVAL) {
       client.stop();
       client.connect(HOST, PORT);
@@ -128,6 +136,7 @@ void loop() {
     }
     return; // skip sensor/gesture work entirely while disconnected
   }
+  wasConnected = true;
 
   if (client.available()) {
     String msg = client.readStringUntil('\n');
