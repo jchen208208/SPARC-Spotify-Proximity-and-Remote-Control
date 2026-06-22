@@ -242,6 +242,11 @@ def main():
             print("Disconnected.")
             play_sound(SOUND_DISCONNECTED)
             was_connected = False
+            if conn:
+                try:
+                    conn.sendall(b"VOL0\n")
+                except Exception:
+                    pass
 
         if not arduino_connected:
             continue
@@ -294,6 +299,10 @@ def main():
             print("\nExiting.")
             stop_volume()
             if conn:
+                try:
+                    conn.sendall(b"VOL0\n")
+                except Exception:
+                    pass
                 conn.close()
             server.close()
             break
