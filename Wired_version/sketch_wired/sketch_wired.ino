@@ -42,6 +42,9 @@ bool volumeActive = false;
 int outOfRangeCount = 0;
 unsigned long lastReadTime = 0;
 
+unsigned long lastMsgTime = 0;
+const unsigned long HEARTBEAT_TIMEOUT = 6000;
+
 float readDistanceCm() {
   digitalWrite(triggerPin, LOW);
   digitalWrite(triggerPin, HIGH);
@@ -91,11 +94,21 @@ void setup() {
 }
 
 void loop() {
+  if (lastMsgTime > 0 && millis() - lastMsgTime > HEARTBEAT_TIMEOUT) {
+    updateVolumeLEDs(0);
+    digitalWrite(ledPause, LOW);
+    flashPin = -1;
+    lastMsgTime = 0;
+  }
+
   if (Serial.available()) {
     String msg = Serial.readStringUntil('\n');
     msg.trim();
+    lastMsgTime = millis();
     if (msg == "VS") {
       volumeActive = false;
+    } else if (msg == "HB") {
+      // heartbeat — connection still alive
     } else if (msg.startsWith("VOLF")) {
       // Forced update from Python after ramp stop — bypass debounce, always render
       int vol = msg.substring(4).toInt();

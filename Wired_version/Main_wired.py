@@ -212,6 +212,7 @@ def main():
     spotify_connected = False
     was_connected = False
     HANDLERS = {}
+    last_heartbeat = 0.0
 
     while True:
         # --- Arduino reconnect ---
@@ -246,6 +247,12 @@ def main():
             print("Disconnected.")
             play_sound(SOUND_DISCONNECTED)
             was_connected = False
+            if ser and ser.is_open:
+                try:
+                    ser.write(b"VOL0\n")
+                    ser.flush()
+                except Exception:
+                    pass
 
         if not arduino_connected:
             continue
@@ -259,6 +266,15 @@ def main():
                     spotify_connected = bool(devices)
                 except Exception:
                     spotify_connected = False
+                now = time.time()
+                if now - last_heartbeat >= 2.0:
+                    if ser and ser.is_open:
+                        try:
+                            ser.write(b"HB\n")
+                            ser.flush()
+                        except Exception:
+                            pass
+                    last_heartbeat = now
                 continue
 
             print(f"← {line}")
@@ -285,7 +301,12 @@ def main():
         except KeyboardInterrupt:
             print("\nExiting.")
             stop_volume()
-            if ser:
+            if ser and ser.is_open:
+                try:
+                    ser.write(b"VOL0\n")
+                    ser.flush()
+                except Exception:
+                    pass
                 ser.close()
             break
 
