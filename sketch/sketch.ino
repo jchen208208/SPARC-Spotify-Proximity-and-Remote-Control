@@ -73,13 +73,6 @@ void handleFlash() {
   }
 }
 
-// Maps vol (0-100) onto 5 LEDs
-// 0      → all off
-// 1-20   → 1 LED
-// 21-40  → 2 LEDs
-// 41-60  → 3 LEDs
-// 61-80  → 4 LEDs
-// 81-100 → 5 LEDs
 void updateVolumeLEDs(int vol) {
   int bars = (vol == 0) ? 0 : ((vol - 1) / 20) + 1;
   for (int i = 0; i < 5; i++) {
@@ -95,8 +88,9 @@ void resetGestureState() {
 void setup() {
   Serial.begin(9600);
   btSerial.begin(9600);
+  btConnected = true;  // TEST MODE: bypass Bluetooth gate to test sensor/LEDs standalone
   pinMode(3, OUTPUT);
-  digitalWrite(3, LOW);  // EN LOW = normal data mode (HIGH would enter AT command mode)
+  digitalWrite(3, LOW);
   pinMode(triggerPin, OUTPUT);
   pinMode(echoPin, INPUT);
   pinMode(ledPause, OUTPUT);
@@ -106,9 +100,7 @@ void setup() {
 }
 
 void loop() {
-  // Heartbeat-based connection detection: Python sends HB every ~2s.
-  // If silent for HEARTBEAT_TIMEOUT ms, treat as disconnected and clear LEDs.
-  bool nowConnected = (lastHeartbeat > 0) && (millis() - lastHeartbeat < HEARTBEAT_TIMEOUT);
+  bool nowConnected = true; // TEST MODE: ignore heartbeat timeout
   if (!nowConnected && btConnected) {
     updateVolumeLEDs(0);
     digitalWrite(ledPause, LOW);
@@ -120,7 +112,6 @@ void loop() {
     Serial.println("BT disconnected");
   }
 
-  // Read incoming messages from Python
   if (btSerial.available()) {
     String msg = btSerial.readStringUntil('\n');
     msg.trim();
@@ -135,7 +126,6 @@ void loop() {
       int vol = msg.substring(3).toInt();
       updateVolumeLEDs(vol);
     }
-    // "HB" heartbeat messages only update lastHeartbeat (handled above)
   }
 
   if (!btConnected) return;
@@ -172,7 +162,6 @@ void loop() {
         passZone = handZone;
         firstPassExitTime = millis();
       } else if (passCount == 1 && handZone == passZone && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
-        // Double pass
         if (passZone == 1) {
           btSerial.println("S-");
           Serial.println("SENT: S-");
@@ -183,7 +172,6 @@ void loop() {
         }
         passCount = 0;
       } else {
-        // Too slow or wrong zone — reset as fresh first pass
         passCount = 1;
         passZone = handZone;
         firstPassExitTime = millis();
@@ -192,7 +180,6 @@ void loop() {
   }
 
   else if (inZone && handInZone) {
-    // Check for hold
     if (!holdFired && millis() - handEntryTime >= HOLD_TIME) {
       btSerial.println("P");
       Serial.println("SENT: P");
@@ -202,7 +189,6 @@ void loop() {
     }
   }
 
-  // Confirm single pass once double-pass window expires
   if (!handInZone && passCount == 1 && !volumeActive && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
     if (passZone == 1) {
       btSerial.println("S+");
