@@ -19,7 +19,7 @@ load_dotenv()
 if sys.platform == "darwin":
     BT_PORT = "/dev/cu.HC-05"
 elif sys.platform == "win32":
-    BT_PORT = "COM3"
+    BT_PORT = "COM7"
 elif sys.platform.startswith("linux"):
     BT_PORT = "/dev/rfcomm0"
 else:
