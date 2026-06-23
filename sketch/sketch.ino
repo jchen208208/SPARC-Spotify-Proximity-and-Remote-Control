@@ -1,19 +1,14 @@
-#include <WiFiNINA.h>
-#include "arduino_secrets.h"
+#include <SoftwareSerial.h>
 
-const char SSID[] = SECRET_SSID;
-const char PASS[] = SECRET_PASS;
-const char HOST[] = SECRET_HOST;
-const int PORT = 5000;
-
-WiFiClient client;
+// HC-05 wiring: HC-05 TX → pin 10, HC-05 RX → pin 11, HC-05 EN → pin 3
+SoftwareSerial btSerial(10, 11); // RX=10 (← HC-05 TX), TX=11 (→ HC-05 RX)
 
 const byte triggerPin = 13;
 const byte echoPin = 12;
 
 const int ledPause = 4;
 
-// Volume bar LEDs (5 new LEDs)
+// Volume bar LEDs (5 LEDs)
 const int volLeds[5] = {5, 6, 7, 8, 9};
 
 // Zone boundaries in cm
@@ -22,8 +17,8 @@ const float ZONE1_MAX = 15.0;  // Zone 1: 2-15cm  → track control
 const float ZONE2_MAX = 30.0;  // Zone 2: 15-30cm → volume control
 
 // Gesture timing
-const unsigned long HOLD_TIME = 300;          // hold triggers P
-const unsigned long DOUBLE_PASS_WINDOW = 800; // ms window to complete a double pass
+const unsigned long HOLD_TIME = 300;
+const unsigned long DOUBLE_PASS_WINDOW = 800;
 const unsigned long READ_INTERVAL = 25;
 
 // 6 consecutive out-of-range readings (150ms) required to confirm hand is gone
@@ -34,11 +29,10 @@ int flashPin = -1;
 unsigned long flashStart = 0;
 const unsigned long FLASH_DURATION = 150;
 
-// Non-blocking reconnect
-unsigned long lastReconnectAttempt = 0;
-const unsigned long RECONNECT_INTERVAL = 2000;
-
-bool wasConnected = false;
+// Heartbeat: Python sends "HB\n" every ~2s; if absent for 5s, go dark
+const unsigned long HEARTBEAT_TIMEOUT = 5000;
+unsigned long lastHeartbeat = 0;
+bool btConnected = false;
 
 bool handInZone = false;
 int handZone = 0;
@@ -93,8 +87,6 @@ void updateVolumeLEDs(int vol) {
   }
 }
 
-// Clears all gesture/volume state. Called on hold (P) and on reconnect,
-// so a dropped connection can never leave volumeActive permanently stuck.
 void resetGestureState() {
   passCount = 0;
   volumeActive = false;
@@ -102,10 +94,9 @@ void resetGestureState() {
 
 void setup() {
   Serial.begin(9600);
-  WiFi.begin(SSID, PASS);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
-  Serial.println("WiFi connected");
-  client.connect(HOST, PORT);
+  btSerial.begin(9600);
+  pinMode(3, OUTPUT);
+  digitalWrite(3, LOW); // EN LOW = normal data mode (HIGH would enter AT command mode)
   pinMode(triggerPin, OUTPUT);
   pinMode(echoPin, INPUT);
   pinMode(ledPause, OUTPUT);
@@ -115,39 +106,39 @@ void setup() {
 }
 
 void loop() {
-  // Non-blocking reconnect: don't stall the sensor loop with delay(500).
-  // Also reset gesture state so a dropped connection can't leave
-  // volumeActive stuck true forever (previously only "VS" or a hold
-  // could clear it).
-  if (!client.connected()) {
-    if (wasConnected) {
-      updateVolumeLEDs(0);
-      digitalWrite(ledPause, LOW);
-      flashPin = -1;
-      wasConnected = false;
-    }
-    if (millis() - lastReconnectAttempt >= RECONNECT_INTERVAL) {
-      client.stop();
-      client.connect(HOST, PORT);
-      lastReconnectAttempt = millis();
-      resetGestureState();
-      handInZone = false;
-      outOfRangeCount = 0;
-    }
-    return; // skip sensor/gesture work entirely while disconnected
+  // Heartbeat-based connection detection: Python sends HB every ~2s.
+  // If silent for HEARTBEAT_TIMEOUT ms, treat as disconnected and clear LEDs.
+  bool nowConnected = (lastHeartbeat > 0) && (millis() - lastHeartbeat < HEARTBEAT_TIMEOUT);
+  if (!nowConnected && btConnected) {
+    updateVolumeLEDs(0);
+    digitalWrite(ledPause, LOW);
+    flashPin = -1;
+    resetGestureState();
+    handInZone = false;
+    outOfRangeCount = 0;
+    btConnected = false;
+    Serial.println("BT disconnected");
   }
-  wasConnected = true;
 
-  if (client.available()) {
-    String msg = client.readStringUntil('\n');
+  // Read incoming messages from Python
+  if (btSerial.available()) {
+    String msg = btSerial.readStringUntil('\n');
     msg.trim();
+    lastHeartbeat = millis();
+    if (!btConnected) {
+      btConnected = true;
+      Serial.println("BT connected");
+    }
     if (msg == "VS") {
       volumeActive = false;
     } else if (msg.startsWith("VOL")) {
       int vol = msg.substring(3).toInt();
       updateVolumeLEDs(vol);
     }
+    // "HB" heartbeat messages only update lastHeartbeat (handled above)
   }
+
+  if (!btConnected) return;
 
   if (millis() - lastReadTime < READ_INTERVAL) return;
   lastReadTime = millis();
@@ -183,16 +174,16 @@ void loop() {
       } else if (passCount == 1 && handZone == passZone && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
         // Double pass
         if (passZone == 1) {
-          client.println("S-");
+          btSerial.println("S-");
           Serial.println("SENT: S-");
         } else {
-          client.println("V-");
+          btSerial.println("V-");
           Serial.println("SENT: V-");
           volumeActive = true;
         }
         passCount = 0;
       } else {
-        // Too slow or wrong zone - fresh first pass
+        // Too slow or wrong zone — reset as fresh first pass
         passCount = 1;
         passZone = handZone;
         firstPassExitTime = millis();
@@ -203,11 +194,10 @@ void loop() {
   else if (inZone && handInZone) {
     // Check for hold
     if (!holdFired && millis() - handEntryTime >= HOLD_TIME) {
-      client.println("P");
+      btSerial.println("P");
       Serial.println("SENT: P");
       flashLed(ledPause);
       holdFired = true;
-      // P always clears volume state
       resetGestureState();
     }
   }
@@ -215,10 +205,10 @@ void loop() {
   // Confirm single pass once double-pass window expires
   if (!handInZone && passCount == 1 && !volumeActive && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
     if (passZone == 1) {
-      client.println("S+");
+      btSerial.println("S+");
       Serial.println("SENT: S+");
     } else {
-      client.println("V+");
+      btSerial.println("V+");
       Serial.println("SENT: V+");
       volumeActive = true;
     }
