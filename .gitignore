@@ -3,4 +3,8 @@ SPARC_Logo.png
 **arduino_secrets.h
 .venv/
 .cache
-.env
+build/
+dist/
+nohup.out
+.DS_Store
+.sparc_cache/
