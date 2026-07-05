@@ -146,6 +146,7 @@ def _ramp_volume(sp, direction, ser):
 
 def start_volume(sp, direction, ser):
     global _volume_thread
+    note_action("volup" if direction > 0 else "voldown")
     with _volume_lock:
         _volume_stop.set()
         if _volume_thread is not None and _volume_thread.is_alive():
@@ -166,8 +167,18 @@ def volume_active():
 
 # --- Spotify actions ---
 
+# Last gesture action, read by the UI to play a short animation
+LAST_ACTION = {"name": None, "time": 0.0}
+
+
+def note_action(name):
+    LAST_ACTION["name"] = name
+    LAST_ACTION["time"] = time.time()
+
+
 def next_track(sp, ser):
     sp.next_track()
+    note_action("next")
     print("  Next track")
     time.sleep(0.3)
     send_current_volume(sp, ser)
@@ -178,6 +189,7 @@ def prev_track(sp, ser):
         playback = sp.current_playback()
         if not playback:
             return
+        note_action("prev")
         position = playback.get("progress_ms", 0)
         if position > 3000:
             sp.seek_track(0)
@@ -198,11 +210,13 @@ def toggle_pause(sp, ser):
     playback = sp.current_playback()
     if playback and playback.get("is_playing"):
         sp.pause_playback()
+        note_action("pause")
         print("  Paused")
     else:
         devices = sp.devices().get("devices", [])
         device_id = devices[0]["id"] if devices else None
         sp.start_playback(device_id=device_id)
+        note_action("play")
         print("  Resumed")
     time.sleep(0.3)
     send_current_volume(sp, ser)
@@ -255,11 +269,18 @@ def run_worker(stop_event, status):
 
     def update_spotify_status():
         nonlocal spotify_connected
+        playing = False
         try:
-            devices = sp.devices().get("devices", [])
-            spotify_connected = bool(devices)
+            playback = sp.current_playback()
+            if playback and playback.get("device"):
+                spotify_connected = True
+                playing = bool(playback.get("is_playing"))
+            else:
+                devices = sp.devices().get("devices", [])
+                spotify_connected = bool(devices)
         except Exception:
             spotify_connected = False
+        status["playing"] = playing
         if spotify_connected:
             status["spotify"] = f"Logged in as {user_name}"
             status["spotify_state"] = "ok"
@@ -377,14 +398,17 @@ def main():
         logo = logo.convert_alpha()
         logo = pygame.transform.smoothscale(logo, (int(64 * logo.get_width() / logo.get_height()), 64))
 
-    def sysfont(size, bold=False):
-        return pygame.font.SysFont("avenirnext,helveticaneue,helvetica,arial", size, bold=bold)
+    def load_font(filename, size):
+        try:
+            return pygame.font.Font(os.path.join(ASSET_DIR, filename), size)
+        except Exception:
+            return pygame.font.SysFont("helveticaneue,helvetica,arial", size)
 
-    title_font = sysfont(38, bold=True)
-    sub_font = sysfont(13)
-    label_font = sysfont(17, bold=True)
-    status_font = sysfont(14)
-    hint_font = sysfont(12)
+    title_font = load_font("Poppins-Bold.ttf", 33)
+    sub_font = load_font("Poppins-Regular.ttf", 12)
+    label_font = load_font("Poppins-SemiBold.ttf", 16)
+    status_font = load_font("Poppins-Regular.ttf", 13)
+    hint_font = load_font("Poppins-Regular.ttf", 11)
 
     TEXT = (236, 238, 244)
     DIM = (135, 138, 152)
@@ -425,13 +449,15 @@ def main():
         screen.blit(text_img, (rect.right - 16 - text_img.get_width(), cy - text_img.get_height() // 2))
 
     status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
-              "arduino": "Not connected", "arduino_state": "wait"}
+              "arduino": "Not connected", "arduino_state": "wait", "playing": False}
     stop_event = threading.Event()
     worker = threading.Thread(target=run_worker, args=(stop_event, status), daemon=True)
     worker.start()
 
     clock = pygame.time.Clock()
     t0 = time.time()
+    eq_t = 0.0     # music clock: advances only while playing, so bars freeze in place
+    energy = 0.0   # eases between 0 (paused) and 1 (playing) for smooth transitions
     running = True
     try:
         while running:
@@ -457,22 +483,77 @@ def main():
             draw_card(92, "Spotify", status["spotify"], status["spotify_state"], t)
             draw_card(152, "Arduino", status["arduino"], status["arduino_state"], t)
 
-            # Equalizer: dances in green when connected, red flatline when not
+            # Equalizer: dances in green when playing, freezes dim when paused,
+            # red flatline when not connected
             eq_base, eq_max = 288, 60
+            now = time.time()
+            playing = status["playing"]
+            if LAST_ACTION["name"] in ("play", "pause") and now - LAST_ACTION["time"] < 2.0:
+                playing = LAST_ACTION["name"] == "play"
+            # music clock: run at full speed while playing, ease to a stop on pause
+            dt = clock.get_time() / 1000.0
+            energy += ((1.0 if (connected and playing) else 0.0) - energy) * min(1.0, dt * 7.0)
+            eq_t += dt * energy
+
             if connected:
                 bars, bar_w, gap = 20, 14, 8
+                dim = (38, 88, 58)
+                color = tuple(int(dim[i] + (GREEN[i] - dim[i]) * energy) for i in range(3))
                 for i in range(bars):
-                    wave = 0.55 * (0.5 + 0.5 * math.sin(t * (2.0 + (i % 5) * 0.55) + i * 0.9))
-                    wave += 0.45 * (0.5 + 0.5 * math.sin(t * 3.1 + i * 0.5))
+                    wave = 0.55 * (0.5 + 0.5 * math.sin(eq_t * (2.0 + (i % 5) * 0.55) + i * 0.9))
+                    wave += 0.45 * (0.5 + 0.5 * math.sin(eq_t * 3.1 + i * 0.5))
                     bh = 8 + eq_max * wave
                     x = 24 + i * (bar_w + gap)
-                    pygame.draw.rect(screen, GREEN, (x, eq_base - bh, bar_w, bh), border_radius=4)
+                    pygame.draw.rect(screen, color, (x, eq_base - bh, bar_w, bh), border_radius=4)
+                if energy < 0.85:
+                    p_img = hint_font.render("PAUSED", True, (110, 160, 128))
+                    p_img.set_alpha(int(255 * (1.0 - energy / 0.85)))
+                    screen.blit(p_img, (W // 2 - p_img.get_width() // 2, eq_base - eq_max - 22))
             else:
                 flatline_y = eq_base - 18
                 pygame.draw.line(screen, (150, 70, 70), (24, flatline_y), (W - 24, flatline_y), 2)
                 nc_img = label_font.render("NOT CONNECTED", True, RED)
                 nc_img.set_alpha(int(160 + 95 * math.sin(t * 2.5)))
                 screen.blit(nc_img, (W // 2 - nc_img.get_width() // 2, flatline_y - 36))
+
+            # Short overlay animation for the most recent gesture action
+            ap = (now - LAST_ACTION["time"]) / 0.8
+            if connected and LAST_ACTION["name"] and 0.0 <= ap < 1.0:
+                ease = 1 - (1 - ap) ** 3
+                alpha = int(235 * (1 - ap))
+                white = (245, 246, 250, alpha)
+                overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+                cx, cy = W // 2, eq_base - 34
+                action = LAST_ACTION["name"]
+                if action in ("next", "prev"):
+                    slide = 44 * ease * (1 if action == "next" else -1)
+                    for k in (-22, 2):
+                        x0 = cx + k + slide
+                        if action == "next":
+                            pts = [(x0, cy - 15), (x0, cy + 15), (x0 + 22, cy)]
+                        else:
+                            pts = [(x0 + 22, cy - 15), (x0 + 22, cy + 15), (x0, cy)]
+                        pygame.draw.polygon(overlay, white, pts)
+                elif action == "play":
+                    s = 12 + 10 * ease
+                    pygame.draw.polygon(overlay, white,
+                                        [(cx - s * 0.7, cy - s), (cx - s * 0.7, cy + s), (cx + s, cy)])
+                elif action == "pause":
+                    s = 12 + 6 * ease
+                    pygame.draw.rect(overlay, white, (cx - s - 4, cy - s, 10, 2 * s), border_radius=3)
+                    pygame.draw.rect(overlay, white, (cx + s - 6, cy - s, 10, 2 * s), border_radius=3)
+                elif action in ("volup", "voldown"):
+                    rise = 16 * ease * (1 if action == "volup" else -1)
+                    for j in range(3):
+                        stage = max(0.0, min(1.0, ap * 3 - j * 0.6))
+                        a_j = int(alpha * stage)
+                        if a_j <= 0:
+                            continue
+                        yy = cy + (14 - j * 13) * (1 if action == "volup" else -1) - rise
+                        tip = -9 if action == "volup" else 9
+                        pygame.draw.lines(overlay, (245, 246, 250, a_j), False,
+                                          [(cx - 15, yy), (cx, yy + tip), (cx + 15, yy)], 5)
+                screen.blit(overlay, (0, 0))
 
             hint_img = hint_font.render("Close this window to quit", True, (110, 112, 126))
             screen.blit(hint_img, (W // 2 - hint_img.get_width() // 2, H - 26))
