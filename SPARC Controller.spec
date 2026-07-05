@@ -45,6 +45,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='SPARC Controller.app',
-    icon=None,
+    icon='SPARC.icns',
     bundle_identifier=None,
 )
