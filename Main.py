@@ -365,8 +365,17 @@ def run_worker(stop_event, status):
 def main():
     pygame.init()
     W, H = 480, 330
+    logo = None
+    try:
+        logo = pygame.image.load(os.path.join(ASSET_DIR, "logo.png"))
+        pygame.display.set_icon(logo)
+    except Exception as e:
+        print(f"  Logo error: {e}")
     screen = pygame.display.set_mode((W, H))
     pygame.display.set_caption("SPARC Controller")
+    if logo:
+        logo = logo.convert_alpha()
+        logo = pygame.transform.smoothscale(logo, (int(64 * logo.get_width() / logo.get_height()), 64))
 
     def sysfont(size, bold=False):
         return pygame.font.SysFont("avenirnext,helveticaneue,helvetica,arial", size, bold=bold)
@@ -442,6 +451,8 @@ def main():
             screen.blit(title_img, (78, 16))
             sub_img = sub_font.render("Spotify Proximity and Remote Control", True, DIM)
             screen.blit(sub_img, (80, 58))
+            if logo:
+                screen.blit(logo, (W - 24 - logo.get_width(), 12))
 
             draw_card(92, "Spotify", status["spotify"], status["spotify_state"], t)
             draw_card(152, "Arduino", status["arduino"], status["arduino_state"], t)
