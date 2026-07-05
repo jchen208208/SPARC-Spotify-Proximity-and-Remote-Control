@@ -17,7 +17,7 @@ load_dotenv()
 # Windows: adjust COM port to whichever number Windows assigned after pairing
 # Linux: pair first with bluetoothctl, then bind with rfcomm bind
 if sys.platform == "darwin":
-    BT_PORT = "/dev/cu.HC-05"
+    BT_PORT = "/dev/cu.JAYDENHC-05"
 elif sys.platform == "win32":
     BT_PORT = "COM7"
 elif sys.platform.startswith("linux"):
