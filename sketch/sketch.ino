@@ -88,7 +88,7 @@ void resetGestureState() {
 void setup() {
   Serial.begin(9600);
   btSerial.begin(9600);
-  btConnected = true;  // TEST MODE: bypass Bluetooth gate to test sensor/LEDs standalone
+  btConnected = false;
   pinMode(3, OUTPUT);
   digitalWrite(3, LOW);
   pinMode(triggerPin, OUTPUT);
@@ -100,7 +100,7 @@ void setup() {
 }
 
 void loop() {
-  bool nowConnected = true; // TEST MODE: ignore heartbeat timeout
+  bool nowConnected = (millis() - lastHeartbeat <= HEARTBEAT_TIMEOUT);
   if (!nowConnected && btConnected) {
     updateVolumeLEDs(0);
     digitalWrite(ledPause, LOW);
