@@ -120,7 +120,9 @@ void loop() {
       btConnected = true;
       Serial.println("BT connected");
     }
-    if (msg == "VS") {
+    if (msg == "HB") {
+    btSerial.println("ACK");
+    } else if (msg == "VS") {
       volumeActive = false;
     } else if (msg.startsWith("VOL")) {
       int vol = msg.substring(3).toInt();
