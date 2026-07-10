@@ -1,6 +1,8 @@
 import math
 import os
 import queue
+import shutil
+import subprocess
 import sys
 import time
 import threading
@@ -61,6 +63,61 @@ def get_bt_port():
 
 
 BT_PORT = get_bt_port()
+
+
+def _blueutil_path():
+    """Locate blueutil even when PATH is minimal (e.g. a PyInstaller app
+    launched from Finder, which doesn't inherit a shell's PATH)."""
+    return (shutil.which("blueutil")
+            or next((p for p in ("/opt/homebrew/bin/blueutil",
+                                 "/usr/local/bin/blueutil")
+                     if os.path.exists(p)), None))
+
+
+def _resolve_bt_addr(port):
+    """macOS: map the serial port back to its Bluetooth MAC so a stale HC-05
+    link can be forced down on disconnect. macOS otherwise keeps the dropped
+    RFCOMM channel half-open and refuses to re-establish it until the device is
+    manually removed and re-paired. Honours a BT_MAC override in .env."""
+    if sys.platform != "darwin":
+        return None
+    addr = os.getenv("BT_MAC")
+    if addr:
+        return addr
+    blueutil = _blueutil_path()
+    if not blueutil:
+        return None
+    name = os.path.basename(port).replace("cu.", "").replace("tty.", "")
+    try:
+        out = subprocess.run([blueutil, "--paired"], capture_output=True,
+                             text=True, timeout=5).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        if f'name: "{name}"' in line:
+            return line.split("address:")[1].split(",")[0].strip()
+    return None
+
+
+BT_ADDR = _resolve_bt_addr(BT_PORT)
+
+
+def force_bt_disconnect():
+    """Tear down the OS-level Bluetooth link to the HC-05. After an abrupt power
+    loss macOS leaves the RFCOMM channel half-open, which blocks every reconnect
+    attempt until it's dropped - this is the programmatic equivalent of 'forget
+    & re-add' minus the unpairing, so the next port open() negotiates a fresh
+    link. Best-effort and a no-op off macOS / without blueutil."""
+    if not BT_ADDR:
+        return
+    blueutil = _blueutil_path()
+    if not blueutil:
+        return
+    try:
+        subprocess.run([blueutil, "--disconnect", BT_ADDR],
+                       capture_output=True, timeout=5)
+    except Exception:
+        pass
 
 
 def play_sound(path):
@@ -342,6 +399,11 @@ def run_worker(stop_event, status):
         except Exception:
             pass
         ser = None
+        # Force macOS to drop the (now half-open) Bluetooth channel so the
+        # reconnect loop below can negotiate a fresh link when the HC-05 comes
+        # back - without this, reopening the port silently reuses the stale
+        # channel and never reconnects.
+        force_bt_disconnect()
 
     def update_spotify_status():
         nonlocal spotify_connected
