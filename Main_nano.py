@@ -1,5 +1,6 @@
 import math
 import os
+import queue
 import sys
 import time
 import threading
@@ -35,7 +36,6 @@ SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
 
 
 def find_hc05_port():
-    """Auto-detect a paired HC-05 module's serial port."""
     for port in serial.tools.list_ports.comports():
         name = (port.device or "") + " " + (port.description or "")
         if "HC-05" in name:
@@ -44,15 +44,12 @@ def find_hc05_port():
 
 
 def get_bt_port():
-    """Priority: .env override -> auto-detect -> platform default."""
     env_port = os.getenv("BT_PORT")
     if env_port:
         return env_port
-
     detected = find_hc05_port()
     if detected:
         return detected
-
     if sys.platform == "darwin":
         return "/dev/cu.HC-05"
     elif sys.platform == "win32":
@@ -78,7 +75,6 @@ def get_spotify():
     cache_dir = os.path.join(os.path.expanduser("~"), ".sparc_cache")
     os.makedirs(cache_dir, exist_ok=True)
     cache_path = os.path.join(cache_dir, ".spotify_cache")
-
     auth = SpotifyOAuth(
         client_id=os.getenv("SPOTIPY_CLIENT_ID"),
         client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
@@ -90,13 +86,31 @@ def get_spotify():
     return spotipy.Spotify(auth_manager=auth)
 
 
+_ser_write_lock = threading.Lock()
+
+
+def ser_write(ser, data):
+    """Best-effort thread-safe write to the shared serial connection.
+    Several threads (heartbeat, volume ramp, command handlers) can write
+    to the Arduino concurrently - the lock keeps their messages from
+    interleaving mid-line, and a bad/closed port is just silently skipped
+    the same way every call site already treated it."""
+    if not ser or not ser.is_open:
+        return
+    try:
+        with _ser_write_lock:
+            ser.write(data)
+            ser.flush()
+    except Exception:
+        pass
+
+
 def send_current_volume(sp, ser):
     try:
         playback = sp.current_playback()
         if playback and playback.get("device"):
             vol = playback["device"].get("volume_percent", 0)
-            ser.write(f"VOL{vol}\n".encode())
-            ser.flush()
+            ser_write(ser, f"VOL{vol}\n".encode())
     except Exception:
         pass
 
@@ -123,8 +137,7 @@ def _ramp_volume(sp, direction, ser):
 
     if (direction == 1 and current >= 100) or (direction == -1 and current <= 0):
         _volume_stop.set()
-        ser.write(b"VS\n")
-        ser.flush()
+        ser_write(ser, b"VS\n")
         print(f"  Already at {'max' if direction == 1 else 'min'} volume")
         return
 
@@ -133,12 +146,10 @@ def _ramp_volume(sp, direction, ser):
             current = max(0, min(100, current + direction * VOLUME_STEP))
             sp.volume(int(current), device_id=device_id)
             print(f"  Volume: {current}%")
-            ser.write(f"VOL{int(current)}\n".encode())
-            ser.flush()
+            ser_write(ser, f"VOL{int(current)}\n".encode())
             if current in (0, 100):
                 _volume_stop.set()
-                ser.write(b"VS\n")
-                ser.flush()
+                ser_write(ser, b"VS\n")
                 break
         except Exception as e:
             print(f"  Volume error: {e}")
@@ -168,7 +179,6 @@ def volume_active():
 
 # --- Spotify actions ---
 
-# Last gesture action, read by the UI to play a short animation
 LAST_ACTION = {"name": None, "time": 0.0}
 
 
@@ -194,11 +204,11 @@ def prev_track(sp, ser):
         if position > 3000:
             sp.seek_track(0)
             note_action("restart")
-            print("  Restarted track")
+            print("  ↩ Restarted track")
         else:
             sp.previous_track()
             note_action("prev")
-            print("  Previous track")
+            print("  ⏮ Previous track")
     except spotipy.exceptions.SpotifyException as e:
         if "403" in str(e):
             print("  Previous track unavailable")
@@ -229,8 +239,7 @@ def handle_stop(sp, ser):
         stop_volume()
         if _volume_thread is not None:
             _volume_thread.join(timeout=0.5)
-        ser.write(b"VS\n")
-        ser.flush()
+        ser_write(ser, b"VS\n")
         print("  Volume stopped")
     else:
         toggle_pause(sp, ser)
@@ -244,6 +253,44 @@ def get_handlers(ser):
         "V-": lambda sp: start_volume(sp, -1, ser),
         "P": lambda sp: handle_stop(sp, ser),
     }
+
+
+def _serial_reader(ser, line_queue, stop_flag):
+    """Runs in its own thread and does nothing but pull lines off the wire.
+
+    If the HC-05 loses power, the underlying OS Bluetooth stack can leave
+    a blocking read() hanging well past pyserial's own `timeout` setting -
+    often 20-30s - while it waits out its own link-supervision timeout
+    before reporting the port as dead. Isolating the read here means that
+    hang never stops the main loop from independently noticing (on its own
+    clock, via the queue below) that no data has arrived in a while and
+    reacting immediately, instead of being stuck waiting for this call to
+    return.
+    """
+    while not stop_flag.is_set():
+        try:
+            raw = ser.readline()
+        except Exception:
+            line_queue.put(None)  # sentinel: the port has died
+            return
+        if not raw:
+            continue
+        line = raw.decode("utf-8", errors="ignore").strip()
+        if line:
+            line_queue.put(line)
+
+
+def _dispatch_command(handler, sp, line):
+    """Runs a Spotify command handler on its own thread, so a slow Spotify
+    API call can never block the main loop's disconnect-detection timing -
+    that coupling was what caused occasional timeouts unrelated to the
+    Arduino actually going away."""
+    try:
+        handler(sp)
+    except spotipy.exceptions.SpotifyException as e:
+        print(f"  Spotify error: {e}")
+    except Exception as e:
+        print(f"  Error: {e}")
 
 
 def run_worker(stop_event, status):
@@ -267,7 +314,34 @@ def run_worker(stop_event, status):
     spotify_connected = False
     was_connected = False
     HANDLERS = {}
+    line_queue = queue.Queue()
+    reader_stop = threading.Event()
     last_heartbeat = 0.0
+    last_rx_time = time.time()
+    last_spotify_check = 0.0
+    # Command handlers now run on their own thread (see _dispatch_command),
+    # so a slow Spotify call can no longer stall this loop - ARDUINO_TIMEOUT
+    # only has to cover real silence from the Arduino itself.
+    ARDUINO_TIMEOUT = 3.0
+    HEARTBEAT_INTERVAL = 1.0
+    SPOTIFY_CHECK_INTERVAL = 5.0
+
+    def close_arduino_link(state):
+        nonlocal ser, arduino_connected, was_connected
+        print("Disconnected.")
+        status["arduino"] = "Arduino disconnected"
+        status["arduino_state"] = state
+        arduino_connected = False
+        if was_connected:
+            play_sound(SOUND_DISCONNECTED)
+            was_connected = False
+            ser_write(ser, b"VOL0\n")
+        reader_stop.set()
+        try:
+            ser.close()
+        except Exception:
+            pass
+        ser = None
 
     def update_spotify_status():
         nonlocal spotify_connected
@@ -291,29 +365,50 @@ def run_worker(stop_event, status):
             status["spotify_state"] = "err"
 
     while not stop_event.is_set():
-        # --- Bluetooth reconnect ---
+        # --- Bluetooth reconnect FIRST ---
+        # This runs before the Spotify check so plugging the Arduino back in
+        # is picked up on the very next loop tick instead of waiting behind a
+        # (potentially slow) Spotify API round trip. No `continue` on failure
+        # here - that's what let the disconnect-sound check get skipped
+        # before; instead we just fall through to the state evaluation below
+        # every time, connected or not.
         if ser is None or not ser.is_open:
             try:
                 status["arduino"] = f"Waiting for HC-05 on {BT_PORT}..."
                 status["arduino_state"] = "wait"
                 print(f"Waiting for HC-05 on {BT_PORT}...")
-                ser = serial.Serial(BT_PORT, BAUD_RATE, timeout=1)
-                time.sleep(1)
+                ser = serial.Serial(BT_PORT, BAUD_RATE, timeout=0.3)
                 ser.reset_input_buffer()
                 HANDLERS = get_handlers(ser)
                 arduino_connected = True
+                last_rx_time = time.time()
+                last_heartbeat = 0.0
                 status["arduino"] = "HC-05 connected"
                 status["arduino_state"] = "ok"
                 print("HC-05 connected.")
-                update_spotify_status()
+                # Force the Spotify check below to fire immediately, so
+                # "both connected" is reflected right away instead of
+                # waiting up to SPOTIFY_CHECK_INTERVAL seconds.
+                last_spotify_check = 0.0
+                # Fresh queue + reader thread for this connection. The old
+                # reader thread (if any) is left to exit on its own; it holds
+                # its own references and won't touch this new queue.
+                line_queue = queue.Queue()
+                reader_stop = threading.Event()
+                threading.Thread(target=_serial_reader, args=(ser, line_queue, reader_stop), daemon=True).start()
             except serial.SerialException:
                 arduino_connected = False
-                if stop_event.wait(2):
-                    break
-                update_spotify_status()
-                continue
+                ser = None
+
+        # --- Periodic Spotify check (independent of serial activity) ---
+        now = time.time()
+        if now - last_spotify_check >= SPOTIFY_CHECK_INTERVAL:
+            update_spotify_status()
+            last_spotify_check = now
 
         # --- Evaluate combined state ---
+        # Always runs (nothing above skips past it), so a disconnect is
+        # never missed even while reconnect attempts keep failing.
         both_connected = arduino_connected and spotify_connected
         if both_connected and not was_connected:
             print("Connected.")
@@ -324,62 +419,62 @@ def run_worker(stop_event, status):
             print("Disconnected.")
             play_sound(SOUND_DISCONNECTED)
             was_connected = False
-            if ser and ser.is_open:
-                try:
-                    ser.write(b"VOL0\n")
-                    ser.flush()
-                except Exception:
-                    pass
+            ser_write(ser, b"VOL0\n")
 
         if not arduino_connected:
+            if stop_event.wait(0.5):
+                break
             continue
 
-        # --- Main loop ---
+        # --- Main loop: drain lines from the reader thread ---
+        # Polling the queue (rather than calling ser.readline() here
+        # directly) means this loop's timing is never at the mercy of a
+        # blocking read - the timeout check below runs on schedule every
+        # ~0.2s no matter how long the reader thread's read() call happens
+        # to be stuck for.
         try:
-            line = ser.readline().decode("utf-8", errors="ignore").strip()
-            if not line:
-                update_spotify_status()
-                now = time.time()
-                if now - last_heartbeat >= 2.0:
-                    if ser and ser.is_open:
-                        try:
-                            ser.write(b"HB\n")
-                            ser.flush()
-                        except Exception:
-                            pass
-                    last_heartbeat = now
+            line = line_queue.get(timeout=0.2)
+        except queue.Empty:
+            line = ""
+
+        if line is None:
+            # Reader thread hit a hard serial error - the link is gone.
+            close_arduino_link("wait")
+            continue
+
+        if not line:
+            # No data right now - check whether the Arduino has gone quiet
+            # for too long, or send a heartbeat to check that it's alive.
+            if time.time() - last_rx_time > ARDUINO_TIMEOUT:
+                close_arduino_link("wait")
                 continue
+            now = time.time()
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                ser_write(ser, b"HB\n")
+                last_heartbeat = now
+            continue
 
-            print(f"← {line}")
-            handler = HANDLERS.get(line)
-            if handler:
-                try:
-                    handler(sp)
-                except spotipy.exceptions.SpotifyException as e:
-                    print(f"  Spotify error: {e}")
-                except Exception as e:
-                    print(f"  Error: {e}")
-            else:
-                print(f"  [unrecognized] {repr(line)}")
+        # ACK: Arduino heartbeat response — update rx time, skip print
+        if line == "ACK":
+            last_rx_time = time.time()
+            continue
 
-        except serial.SerialException:
-            print("HC-05 disconnected.")
-            status["arduino"] = "HC-05 disconnected"
-            status["arduino_state"] = "wait"
-            arduino_connected = False
-            try:
-                ser.close()
-            except Exception:
-                pass
-            ser = None
-            was_connected = False
+        last_rx_time = time.time()
+        print(f"← {line}")
+        handler = HANDLERS.get(line)
+        if handler:
+            # Dispatched on its own thread - a slow Spotify call here must
+            # never delay the next iteration of this loop.
+            threading.Thread(target=_dispatch_command, args=(handler, sp, line), daemon=True).start()
+        else:
+            print(f"  [unrecognized] {repr(line)}")
 
     # --- Cleanup on quit ---
     stop_volume()
+    reader_stop.set()
+    ser_write(ser, b"VOL0\n")
     if ser and ser.is_open:
         try:
-            ser.write(b"VOL0\n")
-            ser.flush()
             ser.close()
         except Exception:
             pass
@@ -388,30 +483,17 @@ def run_worker(stop_event, status):
 def main():
     pygame.init()
     W, H = 480, 330
-    fullscreen = False
-    logo_orig = None
-    logo_raw = None
-
-    CANVAS_W, CANVAS_H = 480, 330
-    MAX_SCALE = 2.5
-
+    logo = None
     try:
-        logo_raw = pygame.image.load(os.path.join(ASSET_DIR, "logo.png"))
-        pygame.display.set_icon(logo_raw)
+        logo = pygame.image.load(os.path.join(ASSET_DIR, "logo.png"))
+        pygame.display.set_icon(logo)
     except Exception as e:
         print(f"  Logo error: {e}")
-
-    screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
-
-    if logo_raw:
-        try:
-            logo_orig = logo_raw.convert_alpha()
-        except Exception:
-            logo_orig = logo_raw
-
+    screen = pygame.display.set_mode((W, H))
     pygame.display.set_caption("SPARC Controller")
-
-    canvas = pygame.Surface((CANVAS_W, CANVAS_H))
+    if logo:
+        logo = logo.convert_alpha()
+        logo = pygame.transform.smoothscale(logo, (int(64 * logo.get_width() / logo.get_height()), 64))
 
     def load_font(filename, size):
         try:
@@ -433,17 +515,13 @@ def main():
     RED = (226, 85, 85)
     STATE_COLORS = {"ok": GREEN, "wait": RED, "err": RED}
     LOGO_BLUES = [(26, 54, 93), (37, 84, 146), (66, 122, 193), (120, 170, 220)]
+
+    bg = pygame.Surface((W, H))
     top, bottom = (24, 26, 38), (11, 11, 16)
-
-    def make_bg():
-        surf = pygame.Surface((CANVAS_W, CANVAS_H))
-        for y in range(CANVAS_H):
-            f = y / CANVAS_H
-            color = tuple(int(top[i] + (bottom[i] - top[i]) * f) for i in range(3))
-            pygame.draw.line(surf, color, (0, y), (CANVAS_W, y))
-        return surf
-
-    bg = make_bg()
+    for y in range(H):
+        f = y / H
+        color = tuple(int(top[i] + (bottom[i] - top[i]) * f) for i in range(3))
+        pygame.draw.line(bg, color, (0, y), (W, y))
 
     def fit_text(font, text, max_width):
         if font.size(text)[0] <= max_width:
@@ -453,17 +531,17 @@ def main():
         return text + "…"
 
     def draw_card(y, label, text, state, t):
-        rect = pygame.Rect(24, y, CANVAS_W - 48, 52)
-        pygame.draw.rect(canvas, CARD, rect, border_radius=12)
+        rect = pygame.Rect(24, y, W - 48, 52)
+        pygame.draw.rect(screen, CARD, rect, border_radius=12)
         color = STATE_COLORS.get(state, AMBER)
         cy = y + 26
         radius = 6 if state != "wait" else 5 + 1.5 * (0.5 + 0.5 * math.sin(t * 4))
-        pygame.draw.circle(canvas, tuple(c // 3 for c in color), (46, cy), int(radius) + 4)
-        pygame.draw.circle(canvas, color, (46, cy), int(radius))
+        pygame.draw.circle(screen, tuple(c // 3 for c in color), (46, cy), int(radius) + 4)
+        pygame.draw.circle(screen, color, (46, cy), int(radius))
         label_img = label_font.render(label, True, TEXT)
-        canvas.blit(label_img, (64, cy - label_img.get_height() // 2))
+        screen.blit(label_img, (64, cy - label_img.get_height() // 2))
         text_img = status_font.render(fit_text(status_font, text, 270), True, DIM)
-        canvas.blit(text_img, (rect.right - 16 - text_img.get_width(), cy - text_img.get_height() // 2))
+        screen.blit(text_img, (rect.right - 16 - text_img.get_width(), cy - text_img.get_height() // 2))
 
     status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
               "arduino": "Not connected", "arduino_state": "wait", "playing": False}
@@ -482,61 +560,25 @@ def main():
                 if event.type == pygame.QUIT:
                     running = False
 
-                elif event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
-                    fullscreen = not fullscreen
-                    if fullscreen:
-                        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
-                    else:
-                        screen = pygame.display.set_mode((480, 330), pygame.RESIZABLE)
-                    W, H = screen.get_size()
-
-                elif event.type == pygame.VIDEORESIZE and not fullscreen:
-                    W, H = event.w, event.h
-                    screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
-
-                elif hasattr(pygame, 'WINDOWRESIZED') and event.type == pygame.WINDOWRESIZED and not fullscreen:
-                    W, H = screen.get_size()
-
-            # Scale canvas to fit window, capped at MAX_SCALE
-            scale = min(W / CANVAS_W, H / CANVAS_H, MAX_SCALE)
-            out_w = int(CANVAS_W * scale)
-            out_h = int(CANVAS_H * scale)
-            ox = (W - out_w) // 2
-            oy = (H - out_h) // 2
-
             t = time.time() - t0
             connected = status["spotify_state"] == "ok" and status["arduino_state"] == "ok"
-
-            # --- Render to canvas ---
-            canvas.blit(bg, (0, 0))
+            screen.blit(bg, (0, 0))
 
             # Header
             for i, blue in enumerate(LOGO_BLUES):
                 bh = 14 + 18 * (0.5 + 0.5 * math.sin(t * (1.6 + 0.5 * i) + i * 1.3))
-                pygame.draw.rect(canvas, blue, (26 + i * 11, 66 - bh, 7, bh), border_radius=2)
+                pygame.draw.rect(screen, blue, (26 + i * 11, 66 - bh, 7, bh), border_radius=2)
             title_img = title_font.render("SPARC", True, TEXT)
-            canvas.blit(title_img, (78, 16))
+            screen.blit(title_img, (78, 16))
             sub_img = sub_font.render("Spotify Proximity and Remote Control", True, DIM)
-            canvas.blit(sub_img, (80, 58))
-            if logo_orig:
-                logo_h = 64
-                logo_scaled = pygame.transform.smoothscale(
-                    logo_orig,
-                    (int(logo_h * logo_orig.get_width() / logo_orig.get_height()), logo_h)
-                )
-                canvas.blit(logo_scaled, (CANVAS_W - 24 - logo_scaled.get_width(), 12))
+            screen.blit(sub_img, (80, 58))
+            if logo:
+                screen.blit(logo, (W - 24 - logo.get_width(), 12))
 
-            # Status cards
             draw_card(92, "Spotify", status["spotify"], status["spotify_state"], t)
             draw_card(152, "Arduino", status["arduino"], status["arduino_state"], t)
 
-            # Equalizer
-            eq_base = 288
-            eq_max = 60
-            bars, bar_w, gap = 20, 14, 8
-            total_w = bars * bar_w + (bars - 1) * gap
-            eq_x_start = (CANVAS_W - total_w) // 2
-
+            eq_base, eq_max = 288, 60
             now = time.time()
             playing = status["playing"]
             if LAST_ACTION["name"] in ("play", "pause") and now - LAST_ACTION["time"] < 2.0:
@@ -546,24 +588,25 @@ def main():
             eq_t += dt * energy
 
             if connected:
+                bars, bar_w, gap = 20, 14, 8
                 dim = (38, 88, 58)
                 color = tuple(int(dim[i] + (GREEN[i] - dim[i]) * energy) for i in range(3))
                 for i in range(bars):
                     wave = 0.55 * (0.5 + 0.5 * math.sin(eq_t * (2.0 + (i % 5) * 0.55) + i * 0.9))
                     wave += 0.45 * (0.5 + 0.5 * math.sin(eq_t * 3.1 + i * 0.5))
                     bh = 8 + eq_max * wave
-                    x = eq_x_start + i * (bar_w + gap)
-                    pygame.draw.rect(canvas, color, (x, eq_base - bh, bar_w, bh), border_radius=4)
+                    x = 24 + i * (bar_w + gap)
+                    pygame.draw.rect(screen, color, (x, eq_base - bh, bar_w, bh), border_radius=4)
                 if energy < 0.85:
                     p_img = hint_font.render("PAUSED", True, (110, 160, 128))
                     p_img.set_alpha(int(255 * (1.0 - energy / 0.85)))
-                    canvas.blit(p_img, (CANVAS_W // 2 - p_img.get_width() // 2, eq_base - eq_max - 22))
+                    screen.blit(p_img, (W // 2 - p_img.get_width() // 2, eq_base - eq_max - 22))
             else:
                 flatline_y = eq_base - 18
-                pygame.draw.line(canvas, (150, 70, 70), (eq_x_start, flatline_y), (eq_x_start + total_w, flatline_y), 2)
+                pygame.draw.line(screen, (150, 70, 70), (24, flatline_y), (W - 24, flatline_y), 2)
                 nc_img = label_font.render("NOT CONNECTED", True, RED)
                 nc_img.set_alpha(int(160 + 95 * math.sin(t * 2.5)))
-                canvas.blit(nc_img, (CANVAS_W // 2 - nc_img.get_width() // 2, flatline_y - 36))
+                screen.blit(nc_img, (W // 2 - nc_img.get_width() // 2, flatline_y - 36))
 
             # Gesture overlay
             ap = (now - LAST_ACTION["time"]) / 0.8
@@ -571,10 +614,9 @@ def main():
                 ease = 1 - (1 - ap) ** 3
                 alpha = int(235 * (1 - ap))
                 white = (245, 246, 250, alpha)
-                overlay = pygame.Surface((CANVAS_W, CANVAS_H), pygame.SRCALPHA)
-                cx, cy = CANVAS_W // 2, eq_base - 34
+                overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+                cx, cy = W // 2, eq_base - 34
                 action = LAST_ACTION["name"]
-
                 if action in ("next", "prev"):
                     slide = 44 * ease * (1 if action == "next" else -1)
                     for k in (-22, 2):
@@ -608,15 +650,10 @@ def main():
                         tip = -9 if action == "volup" else 9
                         pygame.draw.lines(overlay, (245, 246, 250, a_j), False,
                                           [(cx - 15, yy), (cx, yy + tip), (cx + 15, yy)], 5)
-                canvas.blit(overlay, (0, 0))
+                screen.blit(overlay, (0, 0))
 
             hint_img = hint_font.render("Close this window to quit", True, (110, 112, 126))
-            canvas.blit(hint_img, (CANVAS_W // 2 - hint_img.get_width() // 2, CANVAS_H - 26))
-
-            # Blit scaled canvas to screen with letterbox
-            scaled = pygame.transform.smoothscale(canvas, (out_w, out_h))
-            screen.fill(bottom)
-            screen.blit(scaled, (ox, oy))
+            screen.blit(hint_img, (W // 2 - hint_img.get_width() // 2, H - 26))
 
             pygame.display.flip()
             clock.tick(30)
