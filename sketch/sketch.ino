@@ -1,15 +1,15 @@
 #include <SoftwareSerial.h>
 
 // HC-05 wiring: HC-05 TX → pin 10, HC-05 RX → pin 11, HC-05 EN → pin 3
-SoftwareSerial btSerial(10, 11);  // RX=10 (← HC-05 TX), TX=11 (→ HC-05 RX)
+SoftwareSerial btSerial(5, 6);  // RX=10 (← HC-05 TX), TX=11 (→ HC-05 RX)
 
-const byte triggerPin = 13;
-const byte echoPin = 12;
+const byte triggerPin = 3;
+const byte echoPin = 4;
 
-const int ledPause = 4;
+const int ledPause = 13;
 
 // Volume bar LEDs (5 LEDs)
-const int volLeds[5] = { 5, 6, 7, 8, 9 };
+const int volLeds[5] = { 8, 9, 10, 11, 12 };
 
 // Zone boundaries in cm
 const float DETECT_MIN = 2.0;
@@ -89,8 +89,8 @@ void setup() {
   Serial.begin(9600);
   btSerial.begin(9600);
   btConnected = false;
-  pinMode(3, OUTPUT);
-  digitalWrite(3, LOW);
+  pinMode(2, OUTPUT);
+  digitalWrite(2, LOW);
   pinMode(triggerPin, OUTPUT);
   pinMode(echoPin, INPUT);
   pinMode(ledPause, OUTPUT);
