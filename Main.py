@@ -6,6 +6,7 @@ import threading
 import serial
 import serial.tools.list_ports
 import spotipy
+
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 
 import pygame
@@ -189,13 +190,14 @@ def prev_track(sp, ser):
         playback = sp.current_playback()
         if not playback:
             return
-        note_action("prev")
         position = playback.get("progress_ms", 0)
         if position > 3000:
             sp.seek_track(0)
+            note_action("restart")
             print("  Restarted track")
         else:
             sp.previous_track()
+            note_action("prev")
             print("  Previous track")
     except spotipy.exceptions.SpotifyException as e:
         if "403" in str(e):
@@ -240,7 +242,7 @@ def get_handlers(ser):
         "S-": lambda sp: prev_track(sp, ser),
         "V+": lambda sp: start_volume(sp, +1, ser),
         "V-": lambda sp: start_volume(sp, -1, ser),
-        "P":  lambda sp: handle_stop(sp, ser),
+        "P": lambda sp: handle_stop(sp, ser),
     }
 
 
@@ -386,17 +388,30 @@ def run_worker(stop_event, status):
 def main():
     pygame.init()
     W, H = 480, 330
-    logo = None
+    fullscreen = False
+    logo_orig = None
+    logo_raw = None
+
+    CANVAS_W, CANVAS_H = 480, 330
+    MAX_SCALE = 2.5
+
     try:
-        logo = pygame.image.load(os.path.join(ASSET_DIR, "logo.png"))
-        pygame.display.set_icon(logo)
+        logo_raw = pygame.image.load(os.path.join(ASSET_DIR, "logo.png"))
+        pygame.display.set_icon(logo_raw)
     except Exception as e:
         print(f"  Logo error: {e}")
-    screen = pygame.display.set_mode((W, H))
+
+    screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
+
+    if logo_raw:
+        try:
+            logo_orig = logo_raw.convert_alpha()
+        except Exception:
+            logo_orig = logo_raw
+
     pygame.display.set_caption("SPARC Controller")
-    if logo:
-        logo = logo.convert_alpha()
-        logo = pygame.transform.smoothscale(logo, (int(64 * logo.get_width() / logo.get_height()), 64))
+
+    canvas = pygame.Surface((CANVAS_W, CANVAS_H))
 
     def load_font(filename, size):
         try:
@@ -418,14 +433,17 @@ def main():
     RED = (226, 85, 85)
     STATE_COLORS = {"ok": GREEN, "wait": RED, "err": RED}
     LOGO_BLUES = [(26, 54, 93), (37, 84, 146), (66, 122, 193), (120, 170, 220)]
-
-    # Pre-rendered vertical gradient background
-    bg = pygame.Surface((W, H))
     top, bottom = (24, 26, 38), (11, 11, 16)
-    for y in range(H):
-        f = y / H
-        color = tuple(int(top[i] + (bottom[i] - top[i]) * f) for i in range(3))
-        pygame.draw.line(bg, color, (0, y), (W, y))
+
+    def make_bg():
+        surf = pygame.Surface((CANVAS_W, CANVAS_H))
+        for y in range(CANVAS_H):
+            f = y / CANVAS_H
+            color = tuple(int(top[i] + (bottom[i] - top[i]) * f) for i in range(3))
+            pygame.draw.line(surf, color, (0, y), (CANVAS_W, y))
+        return surf
+
+    bg = make_bg()
 
     def fit_text(font, text, max_width):
         if font.size(text)[0] <= max_width:
@@ -435,18 +453,17 @@ def main():
         return text + "…"
 
     def draw_card(y, label, text, state, t):
-        rect = pygame.Rect(24, y, W - 48, 52)
-        pygame.draw.rect(screen, CARD, rect, border_radius=12)
+        rect = pygame.Rect(24, y, CANVAS_W - 48, 52)
+        pygame.draw.rect(canvas, CARD, rect, border_radius=12)
         color = STATE_COLORS.get(state, AMBER)
         cy = y + 26
-        # status dot with a soft pulse while waiting
         radius = 6 if state != "wait" else 5 + 1.5 * (0.5 + 0.5 * math.sin(t * 4))
-        pygame.draw.circle(screen, tuple(c // 3 for c in color), (46, cy), int(radius) + 4)
-        pygame.draw.circle(screen, color, (46, cy), int(radius))
+        pygame.draw.circle(canvas, tuple(c // 3 for c in color), (46, cy), int(radius) + 4)
+        pygame.draw.circle(canvas, color, (46, cy), int(radius))
         label_img = label_font.render(label, True, TEXT)
-        screen.blit(label_img, (64, cy - label_img.get_height() // 2))
+        canvas.blit(label_img, (64, cy - label_img.get_height() // 2))
         text_img = status_font.render(fit_text(status_font, text, 270), True, DIM)
-        screen.blit(text_img, (rect.right - 16 - text_img.get_width(), cy - text_img.get_height() // 2))
+        canvas.blit(text_img, (rect.right - 16 - text_img.get_width(), cy - text_img.get_height() // 2))
 
     status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
               "arduino": "Not connected", "arduino_state": "wait", "playing": False}
@@ -456,8 +473,8 @@ def main():
 
     clock = pygame.time.Clock()
     t0 = time.time()
-    eq_t = 0.0     # music clock: advances only while playing, so bars freeze in place
-    energy = 0.0   # eases between 0 (paused) and 1 (playing) for smooth transitions
+    eq_t = 0.0
+    energy = 0.0
     running = True
     try:
         while running:
@@ -465,66 +482,99 @@ def main():
                 if event.type == pygame.QUIT:
                     running = False
 
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                    fullscreen = not fullscreen
+                    if fullscreen:
+                        screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+                    else:
+                        screen = pygame.display.set_mode((480, 330), pygame.RESIZABLE)
+                    W, H = screen.get_size()
+
+                elif event.type == pygame.VIDEORESIZE and not fullscreen:
+                    W, H = event.w, event.h
+                    screen = pygame.display.set_mode((W, H), pygame.RESIZABLE)
+
+                elif hasattr(pygame, 'WINDOWRESIZED') and event.type == pygame.WINDOWRESIZED and not fullscreen:
+                    W, H = screen.get_size()
+
+            # Scale canvas to fit window, capped at MAX_SCALE
+            scale = min(W / CANVAS_W, H / CANVAS_H, MAX_SCALE)
+            out_w = int(CANVAS_W * scale)
+            out_h = int(CANVAS_H * scale)
+            ox = (W - out_w) // 2
+            oy = (H - out_h) // 2
+
             t = time.time() - t0
             connected = status["spotify_state"] == "ok" and status["arduino_state"] == "ok"
-            screen.blit(bg, (0, 0))
 
-            # Header: animated blue bars echoing the SPARC logo
+            # --- Render to canvas ---
+            canvas.blit(bg, (0, 0))
+
+            # Header
             for i, blue in enumerate(LOGO_BLUES):
                 bh = 14 + 18 * (0.5 + 0.5 * math.sin(t * (1.6 + 0.5 * i) + i * 1.3))
-                pygame.draw.rect(screen, blue, (26 + i * 11, 66 - bh, 7, bh), border_radius=2)
+                pygame.draw.rect(canvas, blue, (26 + i * 11, 66 - bh, 7, bh), border_radius=2)
             title_img = title_font.render("SPARC", True, TEXT)
-            screen.blit(title_img, (78, 16))
+            canvas.blit(title_img, (78, 16))
             sub_img = sub_font.render("Spotify Proximity and Remote Control", True, DIM)
-            screen.blit(sub_img, (80, 58))
-            if logo:
-                screen.blit(logo, (W - 24 - logo.get_width(), 12))
+            canvas.blit(sub_img, (80, 58))
+            if logo_orig:
+                logo_h = 64
+                logo_scaled = pygame.transform.smoothscale(
+                    logo_orig,
+                    (int(logo_h * logo_orig.get_width() / logo_orig.get_height()), logo_h)
+                )
+                canvas.blit(logo_scaled, (CANVAS_W - 24 - logo_scaled.get_width(), 12))
 
+            # Status cards
             draw_card(92, "Spotify", status["spotify"], status["spotify_state"], t)
             draw_card(152, "Arduino", status["arduino"], status["arduino_state"], t)
 
-            # Equalizer: dances in green when playing, freezes dim when paused,
-            # red flatline when not connected
-            eq_base, eq_max = 288, 60
+            # Equalizer
+            eq_base = 288
+            eq_max = 60
+            bars, bar_w, gap = 20, 14, 8
+            total_w = bars * bar_w + (bars - 1) * gap
+            eq_x_start = (CANVAS_W - total_w) // 2
+
             now = time.time()
             playing = status["playing"]
             if LAST_ACTION["name"] in ("play", "pause") and now - LAST_ACTION["time"] < 2.0:
                 playing = LAST_ACTION["name"] == "play"
-            # music clock: run at full speed while playing, ease to a stop on pause
             dt = clock.get_time() / 1000.0
             energy += ((1.0 if (connected and playing) else 0.0) - energy) * min(1.0, dt * 7.0)
             eq_t += dt * energy
 
             if connected:
-                bars, bar_w, gap = 20, 14, 8
                 dim = (38, 88, 58)
                 color = tuple(int(dim[i] + (GREEN[i] - dim[i]) * energy) for i in range(3))
                 for i in range(bars):
                     wave = 0.55 * (0.5 + 0.5 * math.sin(eq_t * (2.0 + (i % 5) * 0.55) + i * 0.9))
                     wave += 0.45 * (0.5 + 0.5 * math.sin(eq_t * 3.1 + i * 0.5))
                     bh = 8 + eq_max * wave
-                    x = 24 + i * (bar_w + gap)
-                    pygame.draw.rect(screen, color, (x, eq_base - bh, bar_w, bh), border_radius=4)
+                    x = eq_x_start + i * (bar_w + gap)
+                    pygame.draw.rect(canvas, color, (x, eq_base - bh, bar_w, bh), border_radius=4)
                 if energy < 0.85:
                     p_img = hint_font.render("PAUSED", True, (110, 160, 128))
                     p_img.set_alpha(int(255 * (1.0 - energy / 0.85)))
-                    screen.blit(p_img, (W // 2 - p_img.get_width() // 2, eq_base - eq_max - 22))
+                    canvas.blit(p_img, (CANVAS_W // 2 - p_img.get_width() // 2, eq_base - eq_max - 22))
             else:
                 flatline_y = eq_base - 18
-                pygame.draw.line(screen, (150, 70, 70), (24, flatline_y), (W - 24, flatline_y), 2)
+                pygame.draw.line(canvas, (150, 70, 70), (eq_x_start, flatline_y), (eq_x_start + total_w, flatline_y), 2)
                 nc_img = label_font.render("NOT CONNECTED", True, RED)
                 nc_img.set_alpha(int(160 + 95 * math.sin(t * 2.5)))
-                screen.blit(nc_img, (W // 2 - nc_img.get_width() // 2, flatline_y - 36))
+                canvas.blit(nc_img, (CANVAS_W // 2 - nc_img.get_width() // 2, flatline_y - 36))
 
-            # Short overlay animation for the most recent gesture action
+            # Gesture overlay
             ap = (now - LAST_ACTION["time"]) / 0.8
             if connected and LAST_ACTION["name"] and 0.0 <= ap < 1.0:
                 ease = 1 - (1 - ap) ** 3
                 alpha = int(235 * (1 - ap))
                 white = (245, 246, 250, alpha)
-                overlay = pygame.Surface((W, H), pygame.SRCALPHA)
-                cx, cy = W // 2, eq_base - 34
+                overlay = pygame.Surface((CANVAS_W, CANVAS_H), pygame.SRCALPHA)
+                cx, cy = CANVAS_W // 2, eq_base - 34
                 action = LAST_ACTION["name"]
+
                 if action in ("next", "prev"):
                     slide = 44 * ease * (1 if action == "next" else -1)
                     for k in (-22, 2):
@@ -534,6 +584,11 @@ def main():
                         else:
                             pts = [(x0 + 22, cy - 15), (x0 + 22, cy + 15), (x0, cy)]
                         pygame.draw.polygon(overlay, white, pts)
+                elif action == "restart":
+                    slide = 44 * ease * -1
+                    x0 = cx + slide
+                    pts = [(x0 + 22, cy - 15), (x0 + 22, cy + 15), (x0, cy)]
+                    pygame.draw.polygon(overlay, white, pts)
                 elif action == "play":
                     s = 12 + 10 * ease
                     pygame.draw.polygon(overlay, white,
@@ -553,10 +608,15 @@ def main():
                         tip = -9 if action == "volup" else 9
                         pygame.draw.lines(overlay, (245, 246, 250, a_j), False,
                                           [(cx - 15, yy), (cx, yy + tip), (cx + 15, yy)], 5)
-                screen.blit(overlay, (0, 0))
+                canvas.blit(overlay, (0, 0))
 
             hint_img = hint_font.render("Close this window to quit", True, (110, 112, 126))
-            screen.blit(hint_img, (W // 2 - hint_img.get_width() // 2, H - 26))
+            canvas.blit(hint_img, (CANVAS_W // 2 - hint_img.get_width() // 2, CANVAS_H - 26))
+
+            # Blit scaled canvas to screen with letterbox
+            scaled = pygame.transform.smoothscale(canvas, (out_w, out_h))
+            screen.fill(bottom)
+            screen.blit(scaled, (ox, oy))
 
             pygame.display.flip()
             clock.tick(30)
