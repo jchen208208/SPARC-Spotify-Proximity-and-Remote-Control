@@ -379,6 +379,26 @@ def run_worker(stop_event, status):
                 print(f"Waiting for HC-05 on {BT_PORT}...")
                 ser = serial.Serial(BT_PORT, BAUD_RATE, timeout=0.3)
                 ser.reset_input_buffer()
+
+                # macOS opens a paired HC-05's port even when the Arduino is
+                # powered off, so a successful open() does NOT mean the device
+                # is really there. Require an actual reply before calling it
+                # connected - otherwise we flip to "connected", time out on the
+                # silence ARDUINO_TIMEOUT seconds later, reconnect, and loop
+                # forever, spamming the connect/disconnect sounds. Re-send the
+                # probe each tick so a still-booting Arduino isn't rejected for
+                # missing the first one.
+                handshake_deadline = time.time() + 6
+                got_reply = False
+                while time.time() < handshake_deadline:
+                    ser.write(b"HB\n")
+                    ser.flush()
+                    if ser.readline().decode("utf-8", errors="ignore").strip():
+                        got_reply = True
+                        break
+                if not got_reply:
+                    raise serial.SerialException("no response from Arduino")
+
                 HANDLERS = get_handlers(ser)
                 arduino_connected = True
                 last_rx_time = time.time()
@@ -398,6 +418,13 @@ def run_worker(stop_event, status):
                 threading.Thread(target=_serial_reader, args=(ser, line_queue, reader_stop), daemon=True).start()
             except serial.SerialException:
                 arduino_connected = False
+                # Close the port if the open succeeded but the handshake
+                # failed, so a half-open port isn't leaked each retry.
+                if ser is not None:
+                    try:
+                        ser.close()
+                    except Exception:
+                        pass
                 ser = None
 
         # --- Periodic Spotify check (independent of serial activity) ---

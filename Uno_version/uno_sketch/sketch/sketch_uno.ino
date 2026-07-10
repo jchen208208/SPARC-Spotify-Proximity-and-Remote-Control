@@ -125,6 +125,8 @@ void loop() {
     } else if (msg.startsWith("VOL")) {
       int vol = msg.substring(3).toInt();
       updateVolumeLEDs(vol);
+    } else if (msg == "HB") {
+      btSerial.println("HB");  // ack so the app can confirm a live link
     }
   }
 

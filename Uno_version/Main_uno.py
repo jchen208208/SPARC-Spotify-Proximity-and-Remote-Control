@@ -18,9 +18,13 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-load_dotenv(os.path.join(BASE_DIR, '.env'))
+# .env lives in the repo root, one level above this Uno_version/ folder
+load_dotenv(os.path.join(BASE_DIR, os.pardir, '.env'))
 
 BAUD_RATE = 9600
+HEARTBEAT_INTERVAL = 2.0   # how often we ping the HC-05 while connected
+HANDSHAKE_TIMEOUT = 4.0    # require an 'HB' reply within this to trust a new link
+LIVENESS_TIMEOUT = 6.0     # no bytes from a live link for this long → disconnected
 SCOPE = "user-modify-playback-state user-read-playback-state"
 
 VOLUME_STEP = 5
@@ -28,7 +32,7 @@ VOLUME_INTERVAL = 0.2
 
 pygame.mixer.init()
 
-ASSET_DIR = os.path.join(BASE_DIR, "SPARC_assets")
+ASSET_DIR = os.path.join(BASE_DIR, "SPARC_assets_uno")
 SOUND_CONNECTED = os.path.join(ASSET_DIR, "connected.mp3")
 SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
 
@@ -244,6 +248,23 @@ def get_handlers(ser):
     }
 
 
+def handshake(ser):
+    """A paired HC-05 port opens even when the Arduino is powered off, so a
+    successful open is not proof of a live link. Ping and require an 'HB' reply
+    before trusting the connection."""
+    try:
+        ser.reset_input_buffer()
+        deadline = time.time() + HANDSHAKE_TIMEOUT
+        while time.time() < deadline:
+            ser.write(b"HB\n")
+            ser.flush()
+            if ser.readline().decode("utf-8", errors="ignore").strip() == "HB":
+                return True
+    except (serial.SerialException, OSError):
+        pass
+    return False
+
+
 def run_worker(stop_event, status):
     sp = get_spotify()
 
@@ -266,6 +287,7 @@ def run_worker(stop_event, status):
     was_connected = False
     HANDLERS = {}
     last_heartbeat = 0.0
+    last_rx = 0.0
 
     def update_spotify_status():
         nonlocal spotify_connected
@@ -297,15 +319,25 @@ def run_worker(stop_event, status):
                 print(f"Waiting for HC-05 on {BT_PORT}...")
                 ser = serial.Serial(BT_PORT, BAUD_RATE, timeout=1)
                 time.sleep(1)
-                ser.reset_input_buffer()
+                if not handshake(ser):
+                    # Port opened but nothing answered: module off or out of range
+                    ser.close()
+                    ser = None
+                    arduino_connected = False
+                    if stop_event.wait(2):
+                        break
+                    update_spotify_status()
+                    continue
                 HANDLERS = get_handlers(ser)
                 arduino_connected = True
+                last_rx = time.time()
                 status["arduino"] = "HC-05 connected"
                 status["arduino_state"] = "ok"
                 print("HC-05 connected.")
                 update_spotify_status()
-            except serial.SerialException:
+            except (serial.SerialException, OSError):
                 arduino_connected = False
+                ser = None
                 if stop_event.wait(2):
                     break
                 update_spotify_status()
@@ -335,17 +367,21 @@ def run_worker(stop_event, status):
         # --- Main loop ---
         try:
             line = ser.readline().decode("utf-8", errors="ignore").strip()
+            now = time.time()
+            if line:
+                last_rx = now
+
+            if line == "HB":
+                continue  # liveness ack, not a gesture
+
             if not line:
                 update_spotify_status()
-                now = time.time()
-                if now - last_heartbeat >= 2.0:
-                    if ser and ser.is_open:
-                        try:
-                            ser.write(b"HB\n")
-                            ser.flush()
-                        except Exception:
-                            pass
+                if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                    ser.write(b"HB\n")
+                    ser.flush()
                     last_heartbeat = now
+                if now - last_rx > LIVENESS_TIMEOUT:
+                    raise serial.SerialException("no heartbeat ack from HC-05")
                 continue
 
             print(f"← {line}")
@@ -360,7 +396,7 @@ def run_worker(stop_event, status):
             else:
                 print(f"  [unrecognized] {repr(line)}")
 
-        except serial.SerialException:
+        except (serial.SerialException, OSError):
             print("HC-05 disconnected.")
             status["arduino"] = "HC-05 disconnected"
             status["arduino_state"] = "wait"
