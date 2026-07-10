@@ -22,6 +22,12 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# When frozen, prefer a .env sitting next to the executable so a distributed
+# build can be configured (Spotify keys, BT_PORT/COM port) without rebuilding.
+# load_dotenv doesn't override already-set vars, so this external file wins and
+# any .env bundled inside the app is used only as a fallback.
+if getattr(sys, 'frozen', False):
+    load_dotenv(os.path.join(os.path.dirname(sys.executable), '.env'))
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 BAUD_RATE = 9600
