@@ -1,0 +1,44 @@
+name: Build Windows exe
+
+# Builds SPARC Controller.exe on a real Windows runner (PyInstaller can't
+# cross-compile from macOS) and publishes it as a downloadable release asset.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install pyinstaller pyserial spotipy pygame python-dotenv pillow
+
+      - name: Make Windows icon
+        run: python -c "from PIL import Image; Image.open('SPARC_Logo.png').save('SPARC.ico', sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+
+      # No .env here on purpose: secrets aren't on the runner and must never be
+      # baked into a public build. The exe reads a .env placed next to it.
+      - name: Build exe
+        run: pyinstaller --onefile --windowed --name "SPARC Controller" --icon SPARC.ico --add-data "SPARC_assets;SPARC_assets" Main_nano.py
+
+      - name: Stage asset (drop the space for clean URLs)
+        run: Copy-Item "dist/SPARC Controller.exe" "SPARC-Controller.exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SPARC-Controller-Windows
+          path: SPARC-Controller.exe
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "win-build-${{ github.run_number }}" "SPARC-Controller.exe" --title "Windows build #${{ github.run_number }}" --notes "Automated Windows build of SPARC Controller (Main_nano.py). Place a configured .env next to the exe before running."

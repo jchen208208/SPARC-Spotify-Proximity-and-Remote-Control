@@ -22,6 +22,12 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# When frozen, prefer a .env sitting next to the executable so a distributed
+# build can be configured (Spotify keys, BT_PORT/COM port) without rebuilding.
+# load_dotenv doesn't override already-set vars, so this external file wins and
+# any .env bundled inside the app is used only as a fallback.
+if getattr(sys, 'frozen', False):
+    load_dotenv(os.path.join(os.path.dirname(sys.executable), '.env'))
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 BAUD_RATE = 9600
@@ -102,12 +108,16 @@ def _resolve_bt_addr(port):
 BT_ADDR = _resolve_bt_addr(BT_PORT)
 
 
-def force_bt_disconnect():
-    """Tear down the OS-level Bluetooth link to the HC-05. After an abrupt power
-    loss macOS leaves the RFCOMM channel half-open, which blocks every reconnect
-    attempt until it's dropped - this is the programmatic equivalent of 'forget
-    & re-add' minus the unpairing, so the next port open() negotiates a fresh
-    link. Best-effort and a no-op off macOS / without blueutil."""
+def force_bt_reconnect():
+    """Force macOS to re-establish the HC-05 link. After an abrupt power loss
+    macOS will NOT bring a paired HC-05's SPP link back on its own - reopening
+    the port just sits there ("Waiting for HC-05...") until the device is
+    manually removed and re-paired. Explicitly cycling the ACL - disconnect
+    then connect - is what actually revives it (confirmed empirically; a bare
+    --connect isn't enough). This is the programmatic equivalent of forget &
+    re-add, minus the unpairing. Best-effort and a no-op off macOS / without
+    blueutil. Blocks a few seconds while the link settles, which is fine since
+    it only runs on the reconnect path."""
     if not BT_ADDR:
         return
     blueutil = _blueutil_path()
@@ -116,6 +126,10 @@ def force_bt_disconnect():
     try:
         subprocess.run([blueutil, "--disconnect", BT_ADDR],
                        capture_output=True, timeout=5)
+        time.sleep(1)
+        subprocess.run([blueutil, "--connect", BT_ADDR],
+                       capture_output=True, timeout=10)
+        time.sleep(2)  # let macOS recreate the /dev/cu node before we open it
     except Exception:
         pass
 
@@ -399,11 +413,6 @@ def run_worker(stop_event, status):
         except Exception:
             pass
         ser = None
-        # Force macOS to drop the (now half-open) Bluetooth channel so the
-        # reconnect loop below can negotiate a fresh link when the HC-05 comes
-        # back - without this, reopening the port silently reuses the stale
-        # channel and never reconnects.
-        force_bt_disconnect()
 
     def update_spotify_status():
         nonlocal spotify_connected
@@ -488,6 +497,12 @@ def run_worker(stop_event, status):
                     except Exception:
                         pass
                 ser = None
+                # macOS won't revive a paired HC-05's link on its own after a
+                # power-loss - a plain reopen just keeps failing ("Waiting for
+                # HC-05..."). Cycle the ACL so the next attempt can actually
+                # connect. Only runs after a failed attempt, so a healthy first
+                # connect is never churned.
+                force_bt_reconnect()
 
         # --- Periodic Spotify check (independent of serial activity) ---
         now = time.time()
@@ -543,8 +558,10 @@ def run_worker(stop_event, status):
                 last_heartbeat = now
             continue
 
-        # ACK: Arduino heartbeat response — update rx time, skip print
-        if line == "ACK":
+        # Heartbeat reply — update rx time, skip print. The nano sketch answers
+        # "ACK" and the uno sketch answers "HB"; accept either so this one app
+        # runs on both boards without logging the reply as a stray command.
+        if line in ("ACK", "HB"):
             last_rx_time = time.time()
             continue
 
