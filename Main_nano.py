@@ -37,11 +37,12 @@ SOUND_CONNECTED = os.path.join(ASSET_DIR, "connected.mp3")
 SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
 
 
-def find_hc05_port():
+def find_esp32_port():
     for port in serial.tools.list_ports.comports():
         name = (port.device or "") + " " + (port.description or "")
-        if "HC-05" in name:
+        if "ESP32" in name:
             return port.device
+        print(name)
     return None
 
 
@@ -49,7 +50,7 @@ def get_bt_port():
     env_port = os.getenv("BT_PORT")
     if env_port:
         return env_port
-    detected = find_hc05_port()
+    detected = find_esp32_port()
     if detected:
         return detected
     if sys.platform == "darwin":
@@ -436,9 +437,9 @@ def run_worker(stop_event, status):
         # every time, connected or not.
         if ser is None or not ser.is_open:
             try:
-                status["arduino"] = f"Waiting for HC-05 on {BT_PORT}..."
+                status["arduino"] = f"Waiting for ESP32 on {BT_PORT}..."
                 status["arduino_state"] = "wait"
-                print(f"Waiting for HC-05 on {BT_PORT}...")
+                print(f"Waiting for ESP32 on {BT_PORT}...")
                 ser = serial.Serial(BT_PORT, BAUD_RATE, timeout=0.3)
                 ser.reset_input_buffer()
 
@@ -465,9 +466,9 @@ def run_worker(stop_event, status):
                 arduino_connected = True
                 last_rx_time = time.time()
                 last_heartbeat = 0.0
-                status["arduino"] = "HC-05 connected"
+                status["arduino"] = "ESP32 connected"
                 status["arduino_state"] = "ok"
-                print("HC-05 connected.")
+                print("ESP32 connected.")
                 # Force the Spotify check below to fire immediately, so
                 # "both connected" is reflected right away instead of
                 # waiting up to SPOTIFY_CHECK_INTERVAL seconds.
