@@ -31,6 +31,12 @@ SCOPE = "user-modify-playback-state user-read-playback-state"
 
 VOLUME_STEP = 5
 VOLUME_INTERVAL = 0.2
+ESP32_OUI = "8C94DF"
+
+# Windows-only: exact MAC suffixes for our paired boards. The bare OUI above
+# matches any Espressif device in earshot, not just ours - add each board's
+# last MAC byte(s) here (e.g. "68" matches "8C94DF68").
+ESP32_MAC_SUFFIXES = {"68"}
 
 pygame.mixer.init()
 
@@ -74,12 +80,15 @@ def candidate_ports(verbose=False):
     for port in serial.tools.list_ports.comports():
         blob = " ".join(filter(None, (port.device, port.description, port.hwid))).upper()
         seen.append(f"{port.device} | {port.description} | {port.hwid}")
+        if sys.platform == "win32":
+            # Windows never exposes the device name, only the MAC in hwid, and
+            # the bare OUI matches any Espressif board, not just ours - require
+            # an exact suffix match and ignore everything else on this OS.
+            if any(f"{ESP32_OUI}{suffix}" in blob for suffix in ESP32_MAC_SUFFIXES):
+                named.append(port.device)
+            continue
         if any(hint in blob for hint in DEVICE_HINTS):
             named.append(port.device)
-        elif sys.platform == "win32" and ("BTHENUM" in blob or "BLUETOOTH" in blob):
-            # Windows only: on macOS this would just add the useless
-            # /dev/cu.Bluetooth-Incoming-Port and cost 4s probing a dead end.
-            fallback.append(port.device)
     if verbose and not named and not fallback:
         # Turn "it doesn't find the port" into something diagnosable rather than
         # a silent empty list - this is the only place that knows what the OS saw.
@@ -87,6 +96,7 @@ def candidate_ports(verbose=False):
         for line in seen or ["  (none at all)"]:
             print(f"    {line}")
         print("  If the board is paired, add its port to .env as BT_PORT=<port>.")
+    print(seen)
     return named + fallback
 
 
