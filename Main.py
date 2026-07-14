@@ -8,9 +8,8 @@ import time
 import threading
 import serial
 import serial.tools.list_ports
-import spotipy
-import concurrent.futures
 import json
+import spotipy
 
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
 
@@ -26,12 +25,8 @@ else:
 
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
-<<<<<<< Updated upstream:Main.py
 BAUD_RATE = 9600
 HANDSHAKE_TIMEOUT = 4.0  # a port must answer within this to count as our board
-=======
-BAUD_RATE = 115200
->>>>>>> Stashed changes:Main_nano.py
 SCOPE = "user-modify-playback-state user-read-playback-state"
 
 VOLUME_STEP = 5
@@ -44,7 +39,6 @@ SOUND_CONNECTED = os.path.join(ASSET_DIR, "connected.mp3")
 SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
 
 
-<<<<<<< Updated upstream:Main.py
 # The Nano and the Uno both reach us through an HC-05 module; the ESP32 uses
 # its own radio and advertises itself as "SPARC" (see sketch_esp). Past the
 # open() all three speak the same line protocol, so the board only ever differs
@@ -72,12 +66,38 @@ def candidate_ports():
     return named + fallback
 
 
+PORT_CACHE = os.path.join(os.path.expanduser("~"), ".sparc_cache", "port.json")
+
+
+def _load_cached_port():
+    """The port that answered last time this machine ran. Probing a Bluetooth
+    port that turns out to be dead costs ~4s, so on a machine with several
+    boards paired a cold scan is slow; remembering the winner makes every run
+    after the first go straight to it."""
+    try:
+        with open(PORT_CACHE) as f:
+            return json.load(f).get("port")
+    except (OSError, ValueError):
+        return None
+
+
+def _save_cached_port(port):
+    try:
+        os.makedirs(os.path.dirname(PORT_CACHE), exist_ok=True)
+        with open(PORT_CACHE, "w") as f:
+            json.dump({"port": port}, f)
+    except OSError:
+        pass
+
+
 def resolve_ports(preferred=None):
     """Ports to try this round: last known good, then the .env override, then
-    whatever autodetect turns up. Re-run on every reconnect rather than once at
-    startup, so a board powered on after the app is still picked up."""
+    the port cached from a previous run, then whatever autodetect turns up.
+    Re-run on every reconnect rather than once at startup, so a board powered on
+    after the app is still picked up. A stale entry costs nothing: it just fails
+    the handshake and we fall through to the next candidate."""
     ports = []
-    for port in (preferred, os.getenv("BT_PORT")):
+    for port in (preferred, os.getenv("BT_PORT"), _load_cached_port()):
         if port and port not in ports:
             ports.append(port)
     for port in candidate_ports():
@@ -116,129 +136,6 @@ def open_device(port):
     return None
 
 
-=======
-_probe_queue = queue.Queue()
-
-
-def _probe_worker():
-    while True:
-        port, baudrate, read_timeout, result_holder, done_event = _probe_queue.get()
-        try:
-            with serial.Serial(port, baudrate=baudrate, timeout=read_timeout) as ser:
-                result_holder["active"] = ser.is_open
-        except (serial.SerialException, OSError) as e:
-            result_holder["active"] = False
-            result_holder["error"] = str(e)
-        done_event.set()
-
-
-threading.Thread(target=_probe_worker, daemon=True).start()
-
-
-def is_port_active(port, baudrate=115200, read_timeout=1, open_timeout=1.5, verbose=False):
-    result_holder = {"active": False}
-    done_event = threading.Event()
-    _probe_queue.put((port, baudrate, read_timeout, result_holder, done_event))
-    if not done_event.wait(timeout=open_timeout):
-        if verbose:
-            print(f"{port} probe still pending after {open_timeout}s (queued or hung)")
-        return False
-    if verbose and not result_holder["active"]:
-        print(f"{port} matched but is not active: {result_holder.get('error')}")
-    return result_holder["active"]
-
-
-_port_fail_times = {}   # port -> time.time() of its last failed probe
-FAIL_COOLDOWN = 3.0      # don't re-probe a port that just failed for this long
-
-
-CACHE_FILE = os.path.join(os.path.expanduser("~"), ".esp32_port_cache.json")
-
-
-def _load_cached_port():
-    try:
-        with open(CACHE_FILE) as f:
-            return json.load(f).get("port")
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        return None
-
-
-def _save_cached_port(port):
-    try:
-        with open(CACHE_FILE, "w") as f:
-            json.dump({"port": port}, f)
-    except OSError:
-        pass
-
-
-def find_esp32_port(prefix="8C94DF", valid_suffixes=None, verbose=True, open_timeout=4):
-    valid_suffixes = valid_suffixes or {"68"}
-    candidates = []
-    for port in serial.tools.list_ports.comports():
-        name = f"{port.device or ''} {port.description or ''} {port.hwid or ''}"
-        if any(prefix + suffix in name for suffix in valid_suffixes):
-            candidates.append(port.device)
-
-    if not candidates:
-        return None
-
-    cached = _load_cached_port()
-    if cached in candidates:
-        candidates.remove(cached)
-        candidates.insert(0, cached)
-
-    now = time.time()
-    for port in candidates:
-        failed_at = _port_fail_times.get(port)
-        if failed_at is not None and now - failed_at < FAIL_COOLDOWN:
-            if verbose:
-                print(f"{port} skipped (failed {now - failed_at:.1f}s ago, cooling down)")
-            continue
-
-        probe_start = time.time()
-        active = is_port_active(port, open_timeout=open_timeout, verbose=verbose)
-        probe_elapsed = time.time() - probe_start
-        if verbose:
-            print(f"{port} probe took {probe_elapsed:.3f}s -> {'active' if active else 'inactive'}")
-
-        if active:
-            _port_fail_times.pop(port, None)
-            _save_cached_port(port)
-            return port
-        _port_fail_times[port] = now
-
-    return None
-
-
-def get_bt_port():
-    detected = find_esp32_port()
-    if detected:
-        return detected
-    env_port = os.getenv("BT_PORT")
-    if env_port:
-        return env_port
-    if sys.platform == "darwin":
-        return "/dev/cu.HC-05"
-    elif sys.platform == "win32":
-        cached = _load_cached_port()
-        if cached:
-            return cached
-        raise RuntimeError(
-            "No ESP32 detected, no BT_PORT set, and no cached port from a "
-            "previous run. Set the BT_PORT env var to the right COM port "
-            "(e.g. set BT_PORT=COM10)."
-        )
-    elif sys.platform.startswith("linux"):
-        return "/dev/rfcomm0"
-    else:
-        raise RuntimeError(f"Unsupported platform: {sys.platform}")
-
-
-BT_PORT = None
-BT_ADDR = None
-
-
->>>>>>> Stashed changes:Main_nano.py
 def _blueutil_path():
     """Locate blueutil even when PATH is minimal (e.g. a PyInstaller app
     launched from Finder, which doesn't inherit a shell's PATH)."""
@@ -273,13 +170,8 @@ def _resolve_bt_addr(port):
     return None
 
 
-<<<<<<< Updated upstream:Main.py
 def force_bt_disconnect(port):
     """Tear down the OS-level Bluetooth link to the board. After an abrupt power
-=======
-def force_bt_disconnect():
-    """Tear down the OS-level Bluetooth link to the HC-05. After an abrupt power
->>>>>>> Stashed changes:Main_nano.py
     loss macOS leaves the RFCOMM channel half-open, which blocks every reconnect
     attempt until it's dropped - this is the programmatic equivalent of 'forget
     & re-add' minus the unpairing, so the next port open() negotiates a fresh
@@ -618,7 +510,6 @@ def run_worker(stop_event, status):
         # before; instead we just fall through to the state evaluation below
         # every time, connected or not.
         if ser is None or not ser.is_open:
-<<<<<<< Updated upstream:Main.py
             arduino_connected = False
             ports = resolve_ports(active_port)
             if not ports:
@@ -640,35 +531,8 @@ def run_worker(stop_event, status):
                     ser = None
                 if ser:
                     active_port = port
+                    _save_cached_port(port)
                     break
-=======
-            try:
-                BT_PORT = get_bt_port()
-                BT_ADDR = _resolve_bt_addr(BT_PORT)
-                status["arduino"] = f"Waiting for ESP32 on {BT_PORT}..."
-                status["arduino_state"] = "wait"
-                print(f"Waiting for ESP32 on {BT_PORT}...")
-                ser = serial.Serial(BT_PORT, BAUD_RATE, timeout=0.3)
-                ser.reset_input_buffer()
-                # macOS opens a paired HC-05's port even when the Arduino is
-                # powered off, so a successful open() does NOT mean the device
-                # is really there. Require an actual reply before calling it
-                # connected - otherwise we flip to "connected", time out on the
-                # silence ARDUINO_TIMEOUT seconds later, reconnect, and loop
-                # forever, spamming the connect/disconnect sounds. Re-send the
-                # probe each tick so a still-booting Arduino isn't rejected for
-                # missing the first one.
-                handshake_deadline = time.time() + 6
-                got_reply = False
-                while time.time() < handshake_deadline:
-                    ser.write(b"HB\n")
-                    ser.flush()
-                    if ser.readline().decode("utf-8", errors="ignore").strip():
-                        got_reply = True
-                        break
-                if not got_reply:
-                    raise serial.SerialException("no response from Arduino")
->>>>>>> Stashed changes:Main_nano.py
 
             if ser:
                 HANDLERS = get_handlers(ser)
