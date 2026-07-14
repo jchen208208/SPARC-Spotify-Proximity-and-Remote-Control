@@ -632,6 +632,11 @@ def run_worker(stop_event, status):
             ser.close()
         except Exception:
             pass
+    # Closing the port is not enough: macOS keeps the RFCOMM channel half-open
+    # after we let go of it, and the next run silently reopens that dead channel
+    # instead of negotiating a fresh one - which is what forces a manual "forget
+    # this device & re-pair" between runs. Drop the link on the way out.
+    force_bt_disconnect(active_port)
 
 
 def main():
