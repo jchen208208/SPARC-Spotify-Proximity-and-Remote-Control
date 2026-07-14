@@ -45,7 +45,12 @@ bool volumeActive = false;
 int outOfRangeCount = 0;
 unsigned long lastReadTime = 0;
 
+// False if the VL53L0X never came up. Gestures stop working, but Bluetooth keeps
+// running so the app still connects and says so, rather than the board going dark.
+bool sensorReady = false;
+
 float readDistanceCm() {
+  if (!sensorReady) return -1;             // never poke a sensor that isn't there
   VL53L0X_RangingMeasurementData_t measure;
   lox.rangingTest(&measure, false);
   if (measure.RangeStatus == 4) return -1; // out of range / invalid
@@ -73,18 +78,30 @@ void resetGestureState() {
 }
 
 void setup() {
-  // Serial first: a VL53L0X that doesn't answer on I2C can wedge lox.begin(),
-  // and with Serial.begin() after it the board goes dark with no clue why -
-  // Bluetooth is already advertising by then, so it looks alive from the app
-  // while loop() never runs and no gesture is ever sent.
+  // Serial first: with Serial.begin() after lox.begin(), a sensor that doesn't
+  // answer left the board dark with no clue why - Bluetooth was already
+  // advertising by then, so it looked alive from the app while loop() never ran.
   Serial.begin(9600);
   Serial.println("SPARC booting");
 
   btSerial.begin("SPARC");
+
   Wire.begin(21, 22); // SDA, SCL
-  if (!lox.begin()) {
-    Serial.println("VL53L0X NOT FOUND - check wiring (SDA=21, SCL=22, 3V3, GND)");
+
+  // On a cold power-up the VL53L0X shares the ESP32's rail and is still booting
+  // when we get here, so an immediate begin() finds nothing - and the old sketch
+  // ignored the result, wedging setup() so Bluetooth never answered again. An
+  // EN-reset or a reflash hid this, because the sensor was already powered by
+  // then; that's why it only ever failed on a physical replug. Wait, retry, and
+  // carry on either way so a dead sensor can't take Bluetooth down with it.
+  delay(200);
+  for (int i = 0; i < 5 && !sensorReady; i++) {
+    sensorReady = lox.begin();
+    if (!sensorReady) delay(200);
   }
+  Serial.println(sensorReady
+                   ? "VL53L0X ready"
+                   : "VL53L0X NOT FOUND - check wiring (SDA=21, SCL=22, 3V3, GND)");
 
   btConnected = false;
 
