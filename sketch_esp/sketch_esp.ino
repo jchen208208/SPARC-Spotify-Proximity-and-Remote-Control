@@ -73,16 +73,24 @@ void resetGestureState() {
 }
 
 void setup() {
+  // Serial first: a VL53L0X that doesn't answer on I2C can wedge lox.begin(),
+  // and with Serial.begin() after it the board goes dark with no clue why -
+  // Bluetooth is already advertising by then, so it looks alive from the app
+  // while loop() never runs and no gesture is ever sent.
+  Serial.begin(9600);
+  Serial.println("SPARC booting");
+
   btSerial.begin("SPARC");
   Wire.begin(21, 22); // SDA, SCL
-  lox.begin();
+  if (!lox.begin()) {
+    Serial.println("VL53L0X NOT FOUND - check wiring (SDA=21, SCL=22, 3V3, GND)");
+  }
 
-  Serial.begin(9600);
-  
   btConnected = false;
-  
+
   pinMode(ledPause, OUTPUT);
- 
+
+  Serial.println("setup done");
 }
 
 void loop() {
