@@ -1,15 +1,11 @@
-#include <SoftwareSerial.h>
+#include "BluetoothSerial.h"
+BluetoothSerial btSerial;
 
-// HC-05 wiring: HC-05 TX → pin 10, HC-05 RX → pin 11, HC-05 EN → pin 3
-SoftwareSerial btSerial(5, 6);  // RX=10 (← HC-05 TX), TX=11 (→ HC-05 RX)
+#include <Wire.h>
+#include "Adafruit_VL53L0X.h"
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
-const byte triggerPin = 3;
-const byte echoPin = 4;
-
-const int ledPause = 13;
-
-// Volume bar LEDs (5 LEDs)
-const int volLeds[5] = { 8, 9, 10, 11, 12 };
+const int ledPause = 4;
 
 // Zone boundaries in cm
 const float DETECT_MIN = 2.0;
@@ -50,13 +46,10 @@ int outOfRangeCount = 0;
 unsigned long lastReadTime = 0;
 
 float readDistanceCm() {
-  digitalWrite(triggerPin, LOW);
-  digitalWrite(triggerPin, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(triggerPin, LOW);
-  long duration = pulseIn(echoPin, HIGH, 30000);
-  if (duration == 0) return -1;
-  return duration * 0.034 / 2.0;
+  VL53L0X_RangingMeasurementData_t measure;
+  lox.rangingTest(&measure, false);
+  if (measure.RangeStatus == 4) return -1; // out of range / invalid
+  return measure.RangeMilliMeter / 10.0;   // mm → cm
 }
 
 void flashLed(int pin) {
@@ -73,12 +66,6 @@ void handleFlash() {
   }
 }
 
-void updateVolumeLEDs(int vol) {
-  int bars = (vol == 0) ? 0 : ((vol - 1) / 20) + 1;
-  for (int i = 0; i < 5; i++) {
-    digitalWrite(volLeds[i], i < bars ? HIGH : LOW);
-  }
-}
 
 void resetGestureState() {
   passCount = 0;
@@ -86,23 +73,21 @@ void resetGestureState() {
 }
 
 void setup() {
+  btSerial.begin("SPARC");
+  Wire.begin(21, 22); // SDA, SCL
+  lox.begin();
+
   Serial.begin(9600);
-  btSerial.begin(9600);
+  
   btConnected = false;
-  pinMode(2, OUTPUT);
-  digitalWrite(2, LOW);
-  pinMode(triggerPin, OUTPUT);
-  pinMode(echoPin, INPUT);
+  
   pinMode(ledPause, OUTPUT);
-  for (int i = 0; i < 5; i++) {
-    pinMode(volLeds[i], OUTPUT);
-  }
+ 
 }
 
 void loop() {
   bool nowConnected = (millis() - lastHeartbeat <= HEARTBEAT_TIMEOUT);
   if (!nowConnected && btConnected) {
-    updateVolumeLEDs(0);
     digitalWrite(ledPause, LOW);
     flashPin = -1;
     resetGestureState();
@@ -126,7 +111,6 @@ void loop() {
       volumeActive = false;
     } else if (msg.startsWith("VOL")) {
       int vol = msg.substring(3).toInt();
-      updateVolumeLEDs(vol);
     }
   }
 

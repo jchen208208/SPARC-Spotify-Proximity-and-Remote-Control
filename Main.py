@@ -25,6 +25,7 @@ else:
 load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 BAUD_RATE = 9600
+HANDSHAKE_TIMEOUT = 4.0  # a port must answer within this to count as our board
 SCOPE = "user-modify-playback-state user-read-playback-state"
 
 VOLUME_STEP = 5
@@ -37,33 +38,75 @@ SOUND_CONNECTED = os.path.join(ASSET_DIR, "connected.mp3")
 SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
 
 
-def find_esp32_port():
+# The Nano and the Uno both reach us through an HC-05 module; the ESP32 uses
+# its own radio and advertises itself as "SPARC" (see sketch_esp). Past the
+# open() all three speak the same line protocol, so the board only ever differs
+# in which serial port it shows up as - hence one script for all three.
+DEVICE_HINTS = ("SPARC", "HC-05", "HC05", "ESP32")
+
+
+def candidate_ports():
+    """Serial ports that might be a SPARC controller, most likely first.
+
+    macOS names a Bluetooth port after the device itself (/dev/cu.SPARC,
+    /dev/cu.HC-05), so DEVICE_HINTS matches it outright. Windows does not: every
+    Bluetooth port there is described as "Standard Serial over Bluetooth link"
+    with no trace of the device name, only its MAC buried in the hwid. So on
+    Windows we fall back to offering up every Bluetooth port and letting the
+    handshake in open_device() work out which one is actually ours.
+    """
+    named, fallback = [], []
     for port in serial.tools.list_ports.comports():
-        name = (port.device or "") + " " + (port.description or "")
-        if "ESP32" in name:
-            return port.device
-        print(name)
+        blob = " ".join(filter(None, (port.device, port.description, port.hwid))).upper()
+        if any(hint in blob for hint in DEVICE_HINTS):
+            named.append(port.device)
+        elif sys.platform == "win32" and "BTHENUM" in blob:
+            fallback.append(port.device)
+    return named + fallback
+
+
+def resolve_ports(preferred=None):
+    """Ports to try this round: last known good, then the .env override, then
+    whatever autodetect turns up. Re-run on every reconnect rather than once at
+    startup, so a board powered on after the app is still picked up."""
+    ports = []
+    for port in (preferred, os.getenv("BT_PORT")):
+        if port and port not in ports:
+            ports.append(port)
+    for port in candidate_ports():
+        if port not in ports:
+            ports.append(port)
+    return ports
+
+
+def open_device(port):
+    """Open `port` and prove a real controller is on the other end, else None.
+
+    A successful open() means nothing by itself: macOS hands back the port of a
+    paired-but-powered-off HC-05 quite happily, and on Windows we may well be
+    probing some unrelated Bluetooth device. Without this proof we'd flip to
+    "connected", time out on the silence seconds later, reconnect, and loop
+    forever spamming the connect/disconnect sounds. The probe is re-sent each
+    tick so a still-booting board isn't rejected for missing the first one.
+    The Nano and ESP32 answer "ACK" and the Uno answers "HB" - any line at all
+    is proof of life, so we needn't care which board we got.
+    """
+    ser = serial.Serial(port, BAUD_RATE, timeout=0.3)
+    try:
+        ser.reset_input_buffer()
+        deadline = time.time() + HANDSHAKE_TIMEOUT
+        while time.time() < deadline:
+            ser.write(b"HB\n")
+            ser.flush()
+            if ser.readline().decode("utf-8", errors="ignore").strip():
+                return ser
+    except (serial.SerialException, OSError):
+        pass
+    try:
+        ser.close()  # don't leak a half-open port on every failed probe
+    except Exception:
+        pass
     return None
-
-
-def get_bt_port():
-    env_port = os.getenv("BT_PORT")
-    if env_port:
-        return env_port
-    detected = find_esp32_port()
-    if detected:
-        return detected
-    if sys.platform == "darwin":
-        return "/dev/cu.HC-05"
-    elif sys.platform == "win32":
-        return "COM7"
-    elif sys.platform.startswith("linux"):
-        return "/dev/rfcomm0"
-    else:
-        raise RuntimeError(f"Unsupported platform: {sys.platform}")
-
-
-BT_PORT = get_bt_port()
 
 
 def _blueutil_path():
@@ -76,11 +119,11 @@ def _blueutil_path():
 
 
 def _resolve_bt_addr(port):
-    """macOS: map the serial port back to its Bluetooth MAC so a stale HC-05
-    link can be forced down on disconnect. macOS otherwise keeps the dropped
-    RFCOMM channel half-open and refuses to re-establish it until the device is
+    """macOS: map the serial port back to its Bluetooth MAC so a stale link can
+    be forced down on disconnect. macOS otherwise keeps the dropped RFCOMM
+    channel half-open and refuses to re-establish it until the device is
     manually removed and re-paired. Honours a BT_MAC override in .env."""
-    if sys.platform != "darwin":
+    if sys.platform != "darwin" or not port:
         return None
     addr = os.getenv("BT_MAC")
     if addr:
@@ -100,22 +143,20 @@ def _resolve_bt_addr(port):
     return None
 
 
-BT_ADDR = _resolve_bt_addr(BT_PORT)
-
-
-def force_bt_disconnect():
-    """Tear down the OS-level Bluetooth link to the HC-05. After an abrupt power
+def force_bt_disconnect(port):
+    """Tear down the OS-level Bluetooth link to the board. After an abrupt power
     loss macOS leaves the RFCOMM channel half-open, which blocks every reconnect
     attempt until it's dropped - this is the programmatic equivalent of 'forget
     & re-add' minus the unpairing, so the next port open() negotiates a fresh
     link. Best-effort and a no-op off macOS / without blueutil."""
-    if not BT_ADDR:
+    addr = _resolve_bt_addr(port)
+    if not addr:
         return
     blueutil = _blueutil_path()
     if not blueutil:
         return
     try:
-        subprocess.run([blueutil, "--disconnect", BT_ADDR],
+        subprocess.run([blueutil, "--disconnect", addr],
                        capture_output=True, timeout=5)
     except Exception:
         pass
@@ -368,6 +409,7 @@ def run_worker(stop_event, status):
         return
 
     ser = None
+    active_port = None  # last port that actually handshook - retried first
     arduino_connected = False
     spotify_connected = False
     was_connected = False
@@ -401,10 +443,10 @@ def run_worker(stop_event, status):
             pass
         ser = None
         # Force macOS to drop the (now half-open) Bluetooth channel so the
-        # reconnect loop below can negotiate a fresh link when the HC-05 comes
+        # reconnect loop below can negotiate a fresh link when the board comes
         # back - without this, reopening the port silently reuses the stale
         # channel and never reconnects.
-        force_bt_disconnect()
+        force_bt_disconnect(active_port)
 
     def update_spotify_status():
         nonlocal spotify_connected
@@ -436,39 +478,37 @@ def run_worker(stop_event, status):
         # before; instead we just fall through to the state evaluation below
         # every time, connected or not.
         if ser is None or not ser.is_open:
-            try:
-                status["arduino"] = f"Waiting for ESP32 on {BT_PORT}..."
+            arduino_connected = False
+            ports = resolve_ports(active_port)
+            if not ports:
+                status["arduino"] = "No controller found"
                 status["arduino_state"] = "wait"
-                print(f"Waiting for ESP32 on {BT_PORT}...")
-                ser = serial.Serial(BT_PORT, BAUD_RATE, timeout=0.3)
-                ser.reset_input_buffer()
+            # Probe each candidate in turn: whichever one answers the handshake
+            # is the board, be it a Nano, an Uno or an ESP32. Windows can't tell
+            # us the device name of a Bluetooth port, so this is what stands in
+            # for recognising it by name there.
+            for port in ports:
+                if stop_event.is_set():
+                    break
+                status["arduino"] = f"Waiting for controller on {port}..."
+                status["arduino_state"] = "wait"
+                print(f"Waiting for controller on {port}...")
+                try:
+                    ser = open_device(port)
+                except (serial.SerialException, OSError):
+                    ser = None
+                if ser:
+                    active_port = port
+                    break
 
-                # macOS opens a paired HC-05's port even when the Arduino is
-                # powered off, so a successful open() does NOT mean the device
-                # is really there. Require an actual reply before calling it
-                # connected - otherwise we flip to "connected", time out on the
-                # silence ARDUINO_TIMEOUT seconds later, reconnect, and loop
-                # forever, spamming the connect/disconnect sounds. Re-send the
-                # probe each tick so a still-booting Arduino isn't rejected for
-                # missing the first one.
-                handshake_deadline = time.time() + 6
-                got_reply = False
-                while time.time() < handshake_deadline:
-                    ser.write(b"HB\n")
-                    ser.flush()
-                    if ser.readline().decode("utf-8", errors="ignore").strip():
-                        got_reply = True
-                        break
-                if not got_reply:
-                    raise serial.SerialException("no response from Arduino")
-
+            if ser:
                 HANDLERS = get_handlers(ser)
                 arduino_connected = True
                 last_rx_time = time.time()
                 last_heartbeat = 0.0
-                status["arduino"] = "ESP32 connected"
+                status["arduino"] = f"Connected on {active_port}"
                 status["arduino_state"] = "ok"
-                print("ESP32 connected.")
+                print(f"Controller connected on {active_port}.")
                 # Force the Spotify check below to fire immediately, so
                 # "both connected" is reflected right away instead of
                 # waiting up to SPOTIFY_CHECK_INTERVAL seconds.
@@ -479,16 +519,6 @@ def run_worker(stop_event, status):
                 line_queue = queue.Queue()
                 reader_stop = threading.Event()
                 threading.Thread(target=_serial_reader, args=(ser, line_queue, reader_stop), daemon=True).start()
-            except serial.SerialException:
-                arduino_connected = False
-                # Close the port if the open succeeded but the handshake
-                # failed, so a half-open port isn't leaked each retry.
-                if ser is not None:
-                    try:
-                        ser.close()
-                    except Exception:
-                        pass
-                ser = None
 
         # --- Periodic Spotify check (independent of serial activity) ---
         now = time.time()
@@ -544,8 +574,9 @@ def run_worker(stop_event, status):
                 last_heartbeat = now
             continue
 
-        # ACK: Arduino heartbeat response — update rx time, skip print
-        if line == "ACK":
+        # Heartbeat reply — update rx time, skip print. The Nano and ESP32
+        # sketches answer "ACK", the Uno sketch echoes "HB"; both mean alive.
+        if line in ("ACK", "HB"):
             last_rx_time = time.time()
             continue
 
