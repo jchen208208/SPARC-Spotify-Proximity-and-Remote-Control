@@ -86,6 +86,13 @@ void resetGestureState() {
 }
 
 void setup() {
+<<<<<<< Updated upstream
+=======
+  btSerial.begin("TM SPARC");
+  Wire.begin(21, 22); // SDA, SCL
+  lox.begin();
+
+>>>>>>> Stashed changes
   Serial.begin(9600);
   btSerial.begin(9600);
   btConnected = false;
