@@ -96,7 +96,6 @@ def candidate_ports(verbose=False):
         for line in seen or ["  (none at all)"]:
             print(f"    {line}")
         print("  If the board is paired, add its port to .env as BT_PORT=<port>.")
-    print(seen)
     return named + fallback
 
 
