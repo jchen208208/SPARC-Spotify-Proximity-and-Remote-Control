@@ -43,26 +43,50 @@ SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
 # its own radio and advertises itself as "SPARC" (see sketch_esp). Past the
 # open() all three speak the same line protocol, so the board only ever differs
 # in which serial port it shows up as - hence one script for all three.
-DEVICE_HINTS = ("SPARC", "HC-05", "HC05", "ESP32")
+# Espressif's OUI - the first three bytes of every ESP32's Bluetooth MAC. Windows
+# hides the device name but puts the MAC in the port's hwid, so this is what finds
+# the board there. It identifies the *vendor*, not the board: if two ESP32s are
+# paired, both match and the handshake picks whichever answers - set BT_PORT to
+# pin one. (Boards from other Espressif batches have a different OUI and fall
+# through to the Bluetooth-port sweep below, which finds them too, just slower.)
+ESP32_OUI = "8C94DF"
+
+DEVICE_HINTS = ("SPARC", "HC-05", "HC05", "ESP32", ESP32_OUI)
 
 
-def candidate_ports():
+def candidate_ports(verbose=False):
     """Serial ports that might be a SPARC controller, most likely first.
 
-    macOS names a Bluetooth port after the device itself (/dev/cu.SPARC,
-    /dev/cu.HC-05), so DEVICE_HINTS matches it outright. Windows does not: every
-    Bluetooth port there is described as "Standard Serial over Bluetooth link"
-    with no trace of the device name, only its MAC buried in the hwid. So on
-    Windows we fall back to offering up every Bluetooth port and letting the
-    handshake in open_device() work out which one is actually ours.
+    The two OSes tell us completely different things about a Bluetooth port, so
+    we match on whatever each one actually gives us:
+
+    macOS names the port after the device (/dev/cu.SPARC, /dev/cu.HC-05), so the
+    name hints match outright - but it never exposes a MAC (hwid is "n/a").
+
+    Windows is the mirror image: the description is always "Standard Serial over
+    Bluetooth link", with no trace of the device name, but the MAC *is* there in
+    the hwid. So we match Espressif's OUI - the first three bytes of every ESP32's
+    MAC - which is how the Windows side has always identified the board. Anything
+    Bluetooth-ish that we can't identify is still offered up as a last resort, and
+    open_device()'s handshake decides which one is really ours.
     """
-    named, fallback = [], []
+    named, fallback, seen = [], [], []
     for port in serial.tools.list_ports.comports():
         blob = " ".join(filter(None, (port.device, port.description, port.hwid))).upper()
+        seen.append(f"{port.device} | {port.description} | {port.hwid}")
         if any(hint in blob for hint in DEVICE_HINTS):
             named.append(port.device)
-        elif sys.platform == "win32" and "BTHENUM" in blob:
+        elif sys.platform == "win32" and ("BTHENUM" in blob or "BLUETOOTH" in blob):
+            # Windows only: on macOS this would just add the useless
+            # /dev/cu.Bluetooth-Incoming-Port and cost 4s probing a dead end.
             fallback.append(port.device)
+    if verbose and not named and not fallback:
+        # Turn "it doesn't find the port" into something diagnosable rather than
+        # a silent empty list - this is the only place that knows what the OS saw.
+        print("No candidate ports. Serial ports visible to this machine:")
+        for line in seen or ["  (none at all)"]:
+            print(f"    {line}")
+        print("  If the board is paired, add its port to .env as BT_PORT=<port>.")
     return named + fallback
 
 
@@ -100,7 +124,7 @@ def resolve_ports(preferred=None):
     for port in (preferred, os.getenv("BT_PORT"), _load_cached_port()):
         if port and port not in ports:
             ports.append(port)
-    for port in candidate_ports():
+    for port in candidate_ports(verbose=not ports):
         if port not in ports:
             ports.append(port)
     return ports
