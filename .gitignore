@@ -7,3 +7,6 @@ dist/
 nohup.out
 .DS_Store
 .sparc_cache/
+# PyCharm settings are per-machine: misc.xml stores an absolute interpreter
+# path, so committing it makes each of us overwrite the others' interpreter.
+.idea/
