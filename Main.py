@@ -541,9 +541,12 @@ def run_worker(stop_event, status):
         force_bt_disconnect(active_port)
 
     def _track_info(item):
+        # images are ordered largest first; take the middle (~300px) size -
+        # the UI now shows the cover big, so the 64px one looks mushy.
         images = item.get("album", {}).get("images", [])
-        art_url = images[-1]["url"] if images else None
+        art_url = images[1]["url"] if len(images) > 1 else (images[0]["url"] if images else None)
         return {
+            "id": item.get("id"),
             "name": item.get("name", ""),
             "artist": ", ".join(a["name"] for a in item.get("artists", [])),
             "art": fetch_album_art(art_url),
@@ -647,8 +650,13 @@ def run_worker(stop_event, status):
                 threading.Thread(target=_serial_reader, args=(ser, line_queue, reader_stop), daemon=True).start()
 
         # --- Periodic Spotify check (independent of serial activity) ---
+        # Also re-poll shortly after a control gesture (next/prev/...), so the
+        # UI's cover-wheel animation fires right away instead of waiting out
+        # the interval. The 0.4s settle gives Spotify's API time to reflect it.
         now = time.time()
-        if now - last_spotify_check >= SPOTIFY_CHECK_INTERVAL:
+        acted = LAST_ACTION["time"]
+        if (now - last_spotify_check >= SPOTIFY_CHECK_INTERVAL
+                or (acted > last_spotify_check and now - acted >= 0.4)):
             update_spotify_status()
             last_spotify_check = now
 
@@ -734,7 +742,7 @@ def run_worker(stop_event, status):
 
 def main():
     pygame.init()
-    W, H = 480, 460
+    W, H = 520, 660
     logo = None
     try:
         # icon.png is the macOS-style app icon (white rounded plate, blue
@@ -750,7 +758,7 @@ def main():
     pygame.display.set_caption("SPARC Controller")
     if logo:
         logo = logo.convert_alpha()
-        logo = pygame.transform.smoothscale(logo, (int(64 * logo.get_width() / logo.get_height()), 64))
+        logo = pygame.transform.smoothscale(logo, (int(44 * logo.get_width() / logo.get_height()), 44))
 
     def load_font(filename, size):
         try:
@@ -758,15 +766,17 @@ def main():
         except Exception:
             return pygame.font.SysFont("helveticaneue,helvetica,arial", size)
 
-    title_font = load_font("Poppins-Bold.ttf", 33)
-    sub_font = load_font("Poppins-Regular.ttf", 12)
-    label_font = load_font("Poppins-SemiBold.ttf", 16)
-    status_font = load_font("Poppins-Regular.ttf", 13)
+    wordmark_font = load_font("Poppins-Bold.ttf", 26)
+    sub_font = load_font("Poppins-Regular.ttf", 11)
+    track_font = load_font("Poppins-Bold.ttf", 22)
+    artist_font = load_font("Poppins-Regular.ttf", 14)
+    label_font = load_font("Poppins-SemiBold.ttf", 13)
+    status_font = load_font("Poppins-Regular.ttf", 11)
     hint_font = load_font("Poppins-Regular.ttf", 11)
 
-    TEXT = (236, 238, 244)
-    DIM = (135, 138, 152)
-    CARD = (31, 33, 46)
+    TEXT = (238, 240, 246)
+    DIM = (132, 136, 154)
+    CARD = (28, 30, 44)
     GREEN = (30, 215, 96)
     AMBER = (235, 170, 60)
     RED = (226, 85, 85)
@@ -774,7 +784,7 @@ def main():
     LOGO_BLUES = [(26, 54, 93), (37, 84, 146), (66, 122, 193), (120, 170, 220)]
 
     bg = pygame.Surface((W, H))
-    top, bottom = (24, 26, 38), (11, 11, 16)
+    top, bottom = (21, 23, 40), (6, 6, 11)
     for y in range(H):
         f = y / H
         color = tuple(int(top[i] + (bottom[i] - top[i]) * f) for i in range(3))
@@ -787,56 +797,139 @@ def main():
             text = text[:-1]
         return text + "…"
 
-    def draw_card(y, label, text, state, t):
-        rect = pygame.Rect(24, y, W - 48, 52)
-        pygame.draw.rect(screen, CARD, rect, border_radius=12)
+    def draw_pill(x, y, w, h, label, text, state, t):
+        pygame.draw.rect(screen, CARD, pygame.Rect(x, y, w, h), border_radius=14)
         color = STATE_COLORS.get(state, AMBER)
-        cy = y + 26
-        radius = 6 if state != "wait" else 5 + 1.5 * (0.5 + 0.5 * math.sin(t * 4))
-        pygame.draw.circle(screen, tuple(c // 3 for c in color), (46, cy), int(radius) + 4)
-        pygame.draw.circle(screen, color, (46, cy), int(radius))
+        cy = y + h // 2
+        radius = 5 if state != "wait" else 4 + 1.5 * (0.5 + 0.5 * math.sin(t * 4))
+        pygame.draw.circle(screen, tuple(c // 3 for c in color), (x + 21, cy), int(radius) + 4)
+        pygame.draw.circle(screen, color, (x + 21, cy), int(radius))
         label_img = label_font.render(label, True, TEXT)
-        screen.blit(label_img, (64, cy - label_img.get_height() // 2))
-        text_img = status_font.render(fit_text(status_font, text, 270), True, DIM)
-        screen.blit(text_img, (rect.right - 16 - text_img.get_width(), cy - text_img.get_height() // 2))
+        screen.blit(label_img, (x + 36, y + 6))
+        text_img = status_font.render(fit_text(status_font, text, w - 48), True, DIM)
+        screen.blit(text_img, (x + 36, y + 8 + label_img.get_height()))
 
-    def draw_art(track, x, yy, size, alpha):
+    # ---------- Cover wheel ----------
+    # Covers sit on a wheel: slot 0 is front-and-center, slots ±1 are the
+    # prev/next covers - smaller, lower and tilted, like points further around
+    # the rim. A track change animates every cover one slot along the rim,
+    # with the outgoing cover fading out at slot ±2.
+    CAR_CX, CAR_CY = W // 2, 248
+    COVER = 264             # on-screen size of the focused cover
+    COVER_BASE = 300        # cached surface size (art is fetched at ~300px)
+    SPREAD = 178            # slot-to-slot horizontal distance
+    WHEEL_DUR = 0.55
+
+    def slot_params(s):
+        a = abs(s)
+        near, far = min(a, 1.0), max(0.0, min(a - 1.0, 1.0))
+        scale = 1.0 - 0.46 * near - 0.14 * far
+        alpha = 255 * (1.0 - 0.42 * near) * (1.0 - far)
+        x = CAR_CX + SPREAD * s
+        y = CAR_CY + 24 * min(a, 1.4) ** 2
+        angle = -9.0 * max(-1.5, min(1.5, s))
+        return x, y, scale, alpha, angle
+
+    # Rounded-corner mask, drawn at 2x and downscaled so the corners antialias.
+    _mask = pygame.Surface((COVER_BASE * 2, COVER_BASE * 2), pygame.SRCALPHA)
+    pygame.draw.rect(_mask, (255, 255, 255, 255), _mask.get_rect(), border_radius=40)
+    _mask = pygame.transform.smoothscale(_mask, (COVER_BASE, COVER_BASE))
+
+    placeholder = pygame.Surface((COVER_BASE, COVER_BASE), pygame.SRCALPHA)
+    pygame.draw.rect(placeholder, (*CARD, 255), placeholder.get_rect(), border_radius=20)
+    pygame.draw.rect(placeholder, (*DIM, 90), placeholder.get_rect(), width=2, border_radius=20)
+    for i, blue in enumerate(LOGO_BLUES):
+        bh = 46 + 22 * (i % 2)
+        pygame.draw.rect(placeholder, (*blue, 130),
+                         (COVER_BASE // 2 - 44 + i * 24, COVER_BASE // 2 + 40 - bh, 14, bh),
+                         border_radius=4)
+
+    cover_cache = {}
+
+    def cover_surface(track):
         art = track.get("art") if track else None
-        if art:
-            surf = pygame.transform.smoothscale(art, (size, size))
-            if alpha < 255:
-                surf.set_alpha(alpha)
-            screen.blit(surf, (x, yy))
-        else:
-            s = pygame.Surface((size, size), pygame.SRCALPHA)
-            pygame.draw.rect(s, (*CARD, alpha), s.get_rect(), border_radius=6)
-            pygame.draw.rect(s, (*DIM, min(alpha, 160)), s.get_rect(), width=1, border_radius=6)
-            screen.blit(s, (x, yy))
+        if art is None:
+            return placeholder
+        key = id(art)  # art surfaces are cached per URL, so identity is stable
+        if key not in cover_cache:
+            if len(cover_cache) > 32:
+                cover_cache.clear()
+            s = pygame.transform.smoothscale(art, (COVER_BASE, COVER_BASE)).convert_alpha()
+            s.blit(_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+            cover_cache[key] = s
+        return cover_cache[key]
 
-    def draw_now_playing(y, height, status):
-        rect = pygame.Rect(24, y, W - 48, height)
-        pygame.draw.rect(screen, CARD, rect, border_radius=12)
+    # Ambient glow behind the wheel, tinted with the current cover's colour.
+    _glow_dot = pygame.Surface((64, 64), pygame.SRCALPHA)
+    for gy in range(64):
+        for gx in range(64):
+            d = math.hypot(gx - 31.5, gy - 31.5) / 32.0
+            _glow_dot.set_at((gx, gy), (255, 255, 255, int(120 * max(0.0, 1.0 - d) ** 2.2)))
+    _glow_base = pygame.transform.smoothscale(_glow_dot, (560, 560))
+    glow_cache = {}
 
-        cur = status.get("track_current")
-        prev = status.get("track_prev")
-        nxt = status.get("track_next")
-        cur_size, side_size, gap = 48, 30, 14
-        cx = W // 2
-        cy = rect.top + 10 + cur_size // 2
+    def glow_surface(track):
+        art = track.get("art") if track else None
+        key = id(art) if art is not None else None
+        if key not in glow_cache:
+            if art is not None:
+                r, g, b, _ = pygame.transform.average_color(art)
+                m = max(r, g, b, 1)
+                color = tuple(min(255, int(c * 210 / m)) for c in (r, g, b))
+            else:
+                color = (66, 122, 193)
+            if len(glow_cache) > 32:
+                glow_cache.clear()
+            tinted = _glow_base.copy()
+            tinted.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            glow_cache[key] = tinted
+        return glow_cache[key]
 
-        draw_art(prev, cx - cur_size // 2 - gap - side_size, cy - side_size // 2, side_size, 100)
-        draw_art(cur, cx - cur_size // 2, cy - cur_size // 2, cur_size, 255)
-        draw_art(nxt, cx + cur_size // 2 + gap, cy - side_size // 2, side_size, 100)
+    def ease(p):
+        return p * p * (3.0 - 2.0 * p)
 
-        text_y = cy + cur_size // 2 + 8
-        if cur:
-            name_img = status_font.render(fit_text(status_font, cur["name"], rect.width - 24), True, TEXT)
-            artist_img = hint_font.render(fit_text(hint_font, cur["artist"], rect.width - 24), True, DIM)
-            screen.blit(name_img, (cx - name_img.get_width() // 2, text_y))
-            screen.blit(artist_img, (cx - artist_img.get_width() // 2, text_y + name_img.get_height() + 2))
-        else:
-            empty_img = hint_font.render("Nothing playing", True, DIM)
-            screen.blit(empty_img, (cx - empty_img.get_width() // 2, text_y))
+    car = {"cur_id": None, "snap": (None, None, None), "anim": None}
+
+    def draw_carousel(now, status, t, energy):
+        snap = (status.get("track_prev"), status.get("track_current"),
+                status.get("track_next"))
+        new_id = snap[1].get("id") if snap[1] else None
+        if new_id != car["cur_id"]:
+            old = car["snap"]
+            if car["cur_id"] is not None and new_id is not None and car["anim"] is None:
+                # Skipping back spins the wheel the other way.
+                back = bool(old[0] and new_id == old[0].get("id"))
+                car["anim"] = {"t0": now, "dir": -1 if back else 1,
+                               "out": old[2] if back else old[0]}
+            car["cur_id"] = new_id
+        car["snap"] = snap
+
+        offset = 0.0
+        items = []
+        anim = car["anim"]
+        if anim:
+            p = (now - anim["t0"]) / WHEEL_DUR
+            if p >= 1.0:
+                car["anim"] = None
+            else:
+                offset = anim["dir"] * (1.0 - ease(p))
+                items.append((anim["out"], (-2 if anim["dir"] > 0 else 2) + offset))
+        prev, cur, nxt = car["snap"]
+
+        glow = glow_surface(cur)
+        glow.set_alpha(int(115 + 55 * energy * (0.5 + 0.5 * math.sin(t * 2.2))))
+        screen.blit(glow, glow.get_rect(center=(CAR_CX, CAR_CY)))
+
+        items += [(prev, -1 + offset), (nxt, 1 + offset), (cur, offset)]
+        for track, s in sorted(items, key=lambda it: -abs(it[1])):
+            x, y, scale, alpha, angle = slot_params(s)
+            if alpha <= 2:
+                continue
+            surf = pygame.transform.rotozoom(cover_surface(track), angle,
+                                             scale * COVER / COVER_BASE)
+            surf.set_alpha(int(alpha))
+            screen.blit(surf, surf.get_rect(center=(int(x), int(y))))
+        return cur
 
     status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
               "arduino": "Not connected", "arduino_state": "wait", "playing": False,
@@ -857,26 +950,8 @@ def main():
                     running = False
 
             t = time.time() - t0
-            connected = status["spotify_state"] == "ok" and status["arduino_state"] == "ok"
-            screen.blit(bg, (0, 0))
-
-            # Header
-            for i, blue in enumerate(LOGO_BLUES):
-                bh = 14 + 18 * (0.5 + 0.5 * math.sin(t * (1.6 + 0.5 * i) + i * 1.3))
-                pygame.draw.rect(screen, blue, (26 + i * 11, 66 - bh, 7, bh), border_radius=2)
-            title_img = title_font.render("SPARC", True, TEXT)
-            screen.blit(title_img, (78, 16))
-            sub_img = sub_font.render("Spotify Proximity and Remote Control", True, DIM)
-            screen.blit(sub_img, (80, 58))
-            if logo:
-                screen.blit(logo, (W - 24 - logo.get_width(), 12))
-
-            draw_card(92, "Spotify", status["spotify"], status["spotify_state"], t)
-            draw_card(152, "Arduino", status["arduino"], status["arduino_state"], t)
-            draw_now_playing(214, 104, status)
-
-            eq_base, eq_max = 408, 60
             now = time.time()
+            connected = status["spotify_state"] == "ok" and status["arduino_state"] == "ok"
             playing = status["playing"]
             if LAST_ACTION["name"] in ("play", "pause") and now - LAST_ACTION["time"] < 2.0:
                 playing = LAST_ACTION["name"] == "play"
@@ -884,38 +959,71 @@ def main():
             energy += ((1.0 if (connected and playing) else 0.0) - energy) * min(1.0, dt * 7.0)
             eq_t += dt * energy
 
+            screen.blit(bg, (0, 0))
+
+            # Header
+            for i, blue in enumerate(LOGO_BLUES):
+                bh = 10 + 14 * (0.5 + 0.5 * math.sin(t * (1.6 + 0.5 * i) + i * 1.3))
+                pygame.draw.rect(screen, blue, (26 + i * 9, 56 - bh, 6, bh), border_radius=2)
+            title_img = wordmark_font.render("SPARC", True, TEXT)
+            screen.blit(title_img, (68, 14))
+            sub_img = sub_font.render("Spotify Proximity and Remote Control", True, DIM)
+            screen.blit(sub_img, (70, 48))
+            if logo:
+                screen.blit(logo, (W - 24 - logo.get_width(), 16))
+
+            # Cover wheel + track text
+            cur = draw_carousel(now, status, t, energy)
+            text_y = 404
+            if cur:
+                name_img = track_font.render(fit_text(track_font, cur["name"], W - 70), True, TEXT)
+                artist_img = artist_font.render(fit_text(artist_font, cur["artist"], W - 90), True, DIM)
+                screen.blit(name_img, (W // 2 - name_img.get_width() // 2, text_y))
+                screen.blit(artist_img, (W // 2 - artist_img.get_width() // 2,
+                                         text_y + name_img.get_height() + 2))
+            else:
+                empty_img = artist_font.render("Nothing playing", True, DIM)
+                screen.blit(empty_img, (W // 2 - empty_img.get_width() // 2, text_y + 12))
+
+            # EQ strip / connection state
+            eq_base = 516
             if connected:
-                bars, bar_w, gap = 20, 14, 8
+                bars, bar_w, gap = 15, 8, 5
+                x0 = (W - (bars * bar_w + (bars - 1) * gap)) // 2
                 dim = (38, 88, 58)
                 color = tuple(int(dim[i] + (GREEN[i] - dim[i]) * energy) for i in range(3))
                 for i in range(bars):
                     wave = 0.55 * (0.5 + 0.5 * math.sin(eq_t * (2.0 + (i % 5) * 0.55) + i * 0.9))
                     wave += 0.45 * (0.5 + 0.5 * math.sin(eq_t * 3.1 + i * 0.5))
-                    bh = 8 + eq_max * wave
-                    x = 24 + i * (bar_w + gap)
-                    pygame.draw.rect(screen, color, (x, eq_base - bh, bar_w, bh), border_radius=4)
+                    bh = 5 + 24 * wave
+                    pygame.draw.rect(screen, color, (x0 + i * (bar_w + gap), eq_base - bh, bar_w, bh),
+                                     border_radius=3)
                 if energy < 0.85:
                     p_img = hint_font.render("PAUSED", True, (110, 160, 128))
                     p_img.set_alpha(int(255 * (1.0 - energy / 0.85)))
-                    screen.blit(p_img, (W // 2 - p_img.get_width() // 2, eq_base - eq_max - 22))
+                    screen.blit(p_img, (W // 2 - p_img.get_width() // 2, eq_base - 48))
             else:
-                flatline_y = eq_base - 18
-                pygame.draw.line(screen, (150, 70, 70), (24, flatline_y), (W - 24, flatline_y), 2)
+                flatline_y = eq_base - 12
+                pygame.draw.line(screen, (150, 70, 70), (W // 2 - 110, flatline_y),
+                                 (W // 2 + 110, flatline_y), 2)
                 nc_img = label_font.render("NOT CONNECTED", True, RED)
                 nc_img.set_alpha(int(160 + 95 * math.sin(t * 2.5)))
-                screen.blit(nc_img, (W // 2 - nc_img.get_width() // 2, flatline_y - 36))
+                screen.blit(nc_img, (W // 2 - nc_img.get_width() // 2, flatline_y - 32))
 
-            # Gesture overlay
+            # Gesture overlay - drawn over the focused cover.
             ap = (now - LAST_ACTION["time"]) / 0.8
             if connected and LAST_ACTION["name"] and 0.0 <= ap < 1.0:
-                ease = 1 - (1 - ap) ** 3
+                ease_a = 1 - (1 - ap) ** 3
                 alpha = int(235 * (1 - ap))
                 white = (245, 246, 250, alpha)
                 overlay = pygame.Surface((W, H), pygame.SRCALPHA)
-                cx, cy = W // 2, eq_base - 34
+                cx, cy = CAR_CX, CAR_CY
+                pygame.draw.rect(overlay, (8, 9, 14, int(110 * (1 - ap))),
+                                 (cx - COVER // 2, cy - COVER // 2, COVER, COVER),
+                                 border_radius=20)
                 action = LAST_ACTION["name"]
                 if action in ("next", "prev"):
-                    slide = 44 * ease * (1 if action == "next" else -1)
+                    slide = 44 * ease_a * (1 if action == "next" else -1)
                     for k in (-22, 2):
                         x0 = cx + k + slide
                         if action == "next":
@@ -924,20 +1032,20 @@ def main():
                             pts = [(x0 + 22, cy - 15), (x0 + 22, cy + 15), (x0, cy)]
                         pygame.draw.polygon(overlay, white, pts)
                 elif action == "restart":
-                    slide = 44 * ease * -1
+                    slide = 44 * ease_a * -1
                     x0 = cx + slide
                     pts = [(x0 + 22, cy - 15), (x0 + 22, cy + 15), (x0, cy)]
                     pygame.draw.polygon(overlay, white, pts)
                 elif action == "play":
-                    s = 12 + 10 * ease
+                    s = 12 + 10 * ease_a
                     pygame.draw.polygon(overlay, white,
                                         [(cx - s * 0.7, cy - s), (cx - s * 0.7, cy + s), (cx + s, cy)])
                 elif action == "pause":
-                    s = 12 + 6 * ease
+                    s = 12 + 6 * ease_a
                     pygame.draw.rect(overlay, white, (cx - s - 4, cy - s, 10, 2 * s), border_radius=3)
                     pygame.draw.rect(overlay, white, (cx + s - 6, cy - s, 10, 2 * s), border_radius=3)
                 elif action in ("volup", "voldown"):
-                    rise = 16 * ease * (1 if action == "volup" else -1)
+                    rise = 16 * ease_a * (1 if action == "volup" else -1)
                     for j in range(3):
                         stage = max(0.0, min(1.0, ap * 3 - j * 0.6))
                         a_j = int(alpha * stage)
@@ -949,11 +1057,17 @@ def main():
                                           [(cx - 15, yy), (cx, yy + tip), (cx + 15, yy)], 5)
                 screen.blit(overlay, (0, 0))
 
-            hint_img = hint_font.render("Close this window to quit", True, (110, 112, 126))
-            screen.blit(hint_img, (W // 2 - hint_img.get_width() // 2, H - 26))
+            # Status pills
+            pill_w = (W - 48 - 12) // 2
+            draw_pill(24, 560, pill_w, 46, "Spotify", status["spotify"], status["spotify_state"], t)
+            draw_pill(24 + pill_w + 12, 560, pill_w, 46, "Controller",
+                      status["arduino"], status["arduino_state"], t)
+
+            hint_img = hint_font.render("Close this window to quit", True, (104, 106, 120))
+            screen.blit(hint_img, (W // 2 - hint_img.get_width() // 2, H - 28))
 
             pygame.display.flip()
-            clock.tick(30)
+            clock.tick(60)
     except KeyboardInterrupt:
         pass
 
