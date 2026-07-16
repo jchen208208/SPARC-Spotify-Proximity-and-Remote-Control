@@ -1,3 +1,4 @@
+import io
 import math
 import os
 import queue
@@ -6,6 +7,7 @@ import subprocess
 import sys
 import time
 import threading
+import urllib.request
 import serial
 import serial.tools.list_ports
 import json
@@ -27,7 +29,7 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 BAUD_RATE = 9600
 HANDSHAKE_TIMEOUT = 4.0  # a port must answer within this to count as our board
-SCOPE = "user-modify-playback-state user-read-playback-state"
+SCOPE = "user-modify-playback-state user-read-playback-state user-read-currently-playing"
 
 VOLUME_STEP = 5
 VOLUME_INTERVAL = 0.2
@@ -43,7 +45,6 @@ pygame.mixer.init()
 ASSET_DIR = os.path.join(BASE_DIR, "SPARC_assets")
 SOUND_CONNECTED = os.path.join(ASSET_DIR, "connected.mp3")
 SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
-
 
 # The Nano and the Uno both reach us through an HC-05 module; the ESP32 uses
 # its own radio and advertises itself as "SPARC" (see sketch_esp). Past the
@@ -63,19 +64,19 @@ DEVICE_HINTS = ("SPARC", "HC-05", "HC05", "ESP32", ESP32_OUI)
 def candidate_ports(verbose=False):
     """Serial ports that might be a SPARC controller, most likely first.
 
-    The two OSes tell us completely different things about a Bluetooth port, so
-    we match on whatever each one actually gives us:
+	The two OSes tell us completely different things about a Bluetooth port, so
+	we match on whatever each one actually gives us:
 
-    macOS names the port after the device (/dev/cu.SPARC, /dev/cu.HC-05), so the
-    name hints match outright - but it never exposes a MAC (hwid is "n/a").
+	macOS names the port after the device (/dev/cu.SPARC, /dev/cu.HC-05), so the
+	name hints match outright - but it never exposes a MAC (hwid is "n/a").
 
-    Windows is the mirror image: the description is always "Standard Serial over
-    Bluetooth link", with no trace of the device name, but the MAC *is* there in
-    the hwid. So we match Espressif's OUI - the first three bytes of every ESP32's
-    MAC - which is how the Windows side has always identified the board. Anything
-    Bluetooth-ish that we can't identify is still offered up as a last resort, and
-    open_device()'s handshake decides which one is really ours.
-    """
+	Windows is the mirror image: the description is always "Standard Serial over
+	Bluetooth link", with no trace of the device name, but the MAC *is* there in
+	the hwid. So we match Espressif's OUI - the first three bytes of every ESP32's
+	MAC - which is how the Windows side has always identified the board. Anything
+	Bluetooth-ish that we can't identify is still offered up as a last resort, and
+	open_device()'s handshake decides which one is really ours.
+	"""
     named, fallback, seen = [], [], []
     for port in serial.tools.list_ports.comports():
         blob = " ".join(filter(None, (port.device, port.description, port.hwid))).upper()
@@ -104,9 +105,9 @@ PORT_CACHE = os.path.join(os.path.expanduser("~"), ".sparc_cache", "port.json")
 
 def _load_cached_port():
     """The port that answered last time this machine ran. Probing a Bluetooth
-    port that turns out to be dead costs ~4s, so on a machine with several
-    boards paired a cold scan is slow; remembering the winner makes every run
-    after the first go straight to it."""
+	port that turns out to be dead costs ~4s, so on a machine with several
+	boards paired a cold scan is slow; remembering the winner makes every run
+	after the first go straight to it."""
     try:
         with open(PORT_CACHE) as f:
             return json.load(f).get("port")
@@ -125,10 +126,10 @@ def _save_cached_port(port):
 
 def resolve_ports(preferred=None):
     """Ports to try this round: last known good, then the .env override, then
-    the port cached from a previous run, then whatever autodetect turns up.
-    Re-run on every reconnect rather than once at startup, so a board powered on
-    after the app is still picked up. A stale entry costs nothing: it just fails
-    the handshake and we fall through to the next candidate."""
+	the port cached from a previous run, then whatever autodetect turns up.
+	Re-run on every reconnect rather than once at startup, so a board powered on
+	after the app is still picked up. A stale entry costs nothing: it just fails
+	the handshake and we fall through to the next candidate."""
     ports = []
     for port in (preferred, os.getenv("BT_PORT"), _load_cached_port()):
         if port and port not in ports:
@@ -142,15 +143,15 @@ def resolve_ports(preferred=None):
 def open_device(port):
     """Open `port` and prove a real controller is on the other end, else None.
 
-    A successful open() means nothing by itself: macOS hands back the port of a
-    paired-but-powered-off HC-05 quite happily, and on Windows we may well be
-    probing some unrelated Bluetooth device. Without this proof we'd flip to
-    "connected", time out on the silence seconds later, reconnect, and loop
-    forever spamming the connect/disconnect sounds. The probe is re-sent each
-    tick so a still-booting board isn't rejected for missing the first one.
-    The Nano and ESP32 answer "ACK" and the Uno answers "HB" - any line at all
-    is proof of life, so we needn't care which board we got.
-    """
+	A successful open() means nothing by itself: macOS hands back the port of a
+	paired-but-powered-off HC-05 quite happily, and on Windows we may well be
+	probing some unrelated Bluetooth device. Without this proof we'd flip to
+	"connected", time out on the silence seconds later, reconnect, and loop
+	forever spamming the connect/disconnect sounds. The probe is re-sent each
+	tick so a still-booting board isn't rejected for missing the first one.
+	The Nano and ESP32 answer "ACK" and the Uno answers "HB" - any line at all
+	is proof of life, so we needn't care which board we got.
+	"""
     ser = serial.Serial(port, BAUD_RATE, timeout=0.3)
     try:
         ser.reset_input_buffer()
@@ -171,7 +172,7 @@ def open_device(port):
 
 def _blueutil_path():
     """Locate blueutil even when PATH is minimal (e.g. a PyInstaller app
-    launched from Finder, which doesn't inherit a shell's PATH)."""
+	launched from Finder, which doesn't inherit a shell's PATH)."""
     return (shutil.which("blueutil")
             or next((p for p in ("/opt/homebrew/bin/blueutil",
                                  "/usr/local/bin/blueutil")
@@ -180,9 +181,9 @@ def _blueutil_path():
 
 def _resolve_bt_addr(port):
     """macOS: map the serial port back to its Bluetooth MAC so a stale link can
-    be forced down on disconnect. macOS otherwise keeps the dropped RFCOMM
-    channel half-open and refuses to re-establish it until the device is
-    manually removed and re-paired. Honours a BT_MAC override in .env."""
+	be forced down on disconnect. macOS otherwise keeps the dropped RFCOMM
+	channel half-open and refuses to re-establish it until the device is
+	manually removed and re-paired. Honours a BT_MAC override in .env."""
     if sys.platform != "darwin" or not port:
         return None
     addr = os.getenv("BT_MAC")
@@ -205,10 +206,10 @@ def _resolve_bt_addr(port):
 
 def force_bt_disconnect(port):
     """Tear down the OS-level Bluetooth link to the board. After an abrupt power
-    loss macOS leaves the RFCOMM channel half-open, which blocks every reconnect
-    attempt until it's dropped - this is the programmatic equivalent of 'forget
-    & re-add' minus the unpairing, so the next port open() negotiates a fresh
-    link. Best-effort and a no-op off macOS / without blueutil."""
+	loss macOS leaves the RFCOMM channel half-open, which blocks every reconnect
+	attempt until it's dropped - this is the programmatic equivalent of 'forget
+	& re-add' minus the unpairing, so the next port open() negotiates a fresh
+	link. Best-effort and a no-op off macOS / without blueutil."""
     addr = _resolve_bt_addr(port)
     if not addr:
         return
@@ -245,15 +246,41 @@ def get_spotify():
     return spotipy.Spotify(auth_manager=auth)
 
 
+_art_cache = {}
+_art_cache_lock = threading.Lock()
+
+
+def fetch_album_art(url):
+    """Download and cache album art by URL (Spotify's smallest size, ~64x64).
+	Returns a pygame Surface, or None on any failure so callers can fall back
+	to a placeholder. Scaling to display size happens at draw time, since
+	prev/current/next render the same image at different sizes."""
+    if not url:
+        return None
+    with _art_cache_lock:
+        if url in _art_cache:
+            return _art_cache[url]
+    try:
+        with urllib.request.urlopen(url, timeout=4) as resp:
+            data = resp.read()
+        surf = pygame.image.load(io.BytesIO(data))
+    except Exception as e:
+        print(f"  Album art error: {e}")
+        surf = None
+    with _art_cache_lock:
+        _art_cache[url] = surf
+    return surf
+
+
 _ser_write_lock = threading.Lock()
 
 
 def ser_write(ser, data):
     """Best-effort thread-safe write to the shared serial connection.
-    Several threads (heartbeat, volume ramp, command handlers) can write
-    to the Arduino concurrently - the lock keeps their messages from
-    interleaving mid-line, and a bad/closed port is just silently skipped
-    the same way every call site already treated it."""
+	Several threads (heartbeat, volume ramp, command handlers) can write
+	to the Arduino concurrently - the lock keeps their messages from
+	interleaving mid-line, and a bad/closed port is just silently skipped
+	the same way every call site already treated it."""
     if not ser or not ser.is_open:
         return
     try:
@@ -417,15 +444,15 @@ def get_handlers(ser):
 def _serial_reader(ser, line_queue, stop_flag):
     """Runs in its own thread and does nothing but pull lines off the wire.
 
-    If the HC-05 loses power, the underlying OS Bluetooth stack can leave
-    a blocking read() hanging well past pyserial's own `timeout` setting -
-    often 20-30s - while it waits out its own link-supervision timeout
-    before reporting the port as dead. Isolating the read here means that
-    hang never stops the main loop from independently noticing (on its own
-    clock, via the queue below) that no data has arrived in a while and
-    reacting immediately, instead of being stuck waiting for this call to
-    return.
-    """
+	If the HC-05 loses power, the underlying OS Bluetooth stack can leave
+	a blocking read() hanging well past pyserial's own `timeout` setting -
+	often 20-30s - while it waits out its own link-supervision timeout
+	before reporting the port as dead. Isolating the read here means that
+	hang never stops the main loop from independently noticing (on its own
+	clock, via the queue below) that no data has arrived in a while and
+	reacting immediately, instead of being stuck waiting for this call to
+	return.
+	"""
     while not stop_flag.is_set():
         try:
             raw = ser.readline()
@@ -441,9 +468,9 @@ def _serial_reader(ser, line_queue, stop_flag):
 
 def _dispatch_command(handler, sp, line):
     """Runs a Spotify command handler on its own thread, so a slow Spotify
-    API call can never block the main loop's disconnect-detection timing -
-    that coupling was what caused occasional timeouts unrelated to the
-    Arduino actually going away."""
+	API call can never block the main loop's disconnect-detection timing -
+	that coupling was what caused occasional timeouts unrelated to the
+	Arduino actually going away."""
     try:
         handler(sp)
     except spotipy.exceptions.SpotifyException as e:
@@ -487,6 +514,7 @@ def run_worker(stop_event, status):
     ARDUINO_TIMEOUT = 3.0
     HEARTBEAT_INTERVAL = 1.0
     SPOTIFY_CHECK_INTERVAL = 5.0
+    track_state = {"prev": None, "current_id": None}
 
     def close_arduino_link(state):
         nonlocal ser, arduino_connected, was_connected
@@ -510,6 +538,33 @@ def run_worker(stop_event, status):
         # channel and never reconnects.
         force_bt_disconnect(active_port)
 
+    def _track_info(item):
+        images = item.get("album", {}).get("images", [])
+        art_url = images[-1]["url"] if images else None
+        return {
+            "name": item.get("name", ""),
+            "artist": ", ".join(a["name"] for a in item.get("artists", [])),
+            "art": fetch_album_art(art_url),
+        }
+
+    def _update_track_state(item):
+        # Spotify's API has no "previous track" endpoint, so prev is inferred
+        # by watching the current track ID change between polls. A skip that
+        # happens between two polls (SPOTIFY_CHECK_INTERVAL apart) can be
+        # missed if two changes land in the same window.
+        cur_id = item.get("id")
+        if cur_id and cur_id != track_state["current_id"]:
+            if track_state["current_id"] is not None:
+                track_state["prev"] = status.get("track_current")
+            track_state["current_id"] = cur_id
+        status["track_current"] = _track_info(item)
+        status["track_prev"] = track_state["prev"]
+        try:
+            q_items = sp.queue().get("queue", [])
+            status["track_next"] = _track_info(q_items[0]) if q_items else None
+        except Exception:
+            status["track_next"] = None
+
     def update_spotify_status():
         nonlocal spotify_connected
         playing = False
@@ -518,6 +573,9 @@ def run_worker(stop_event, status):
             if playback and playback.get("device"):
                 spotify_connected = True
                 playing = bool(playback.get("is_playing"))
+                item = playback.get("item")
+                if item:
+                    _update_track_state(item)
             else:
                 devices = sp.devices().get("devices", [])
                 spotify_connected = bool(devices)
@@ -674,7 +732,7 @@ def run_worker(stop_event, status):
 
 def main():
     pygame.init()
-    W, H = 480, 330
+    W, H = 480, 460
     logo = None
     try:
         logo = pygame.image.load(os.path.join(ASSET_DIR, "logo.png"))
@@ -735,8 +793,47 @@ def main():
         text_img = status_font.render(fit_text(status_font, text, 270), True, DIM)
         screen.blit(text_img, (rect.right - 16 - text_img.get_width(), cy - text_img.get_height() // 2))
 
+    def draw_art(track, x, yy, size, alpha):
+        art = track.get("art") if track else None
+        if art:
+            surf = pygame.transform.smoothscale(art, (size, size))
+            if alpha < 255:
+                surf.set_alpha(alpha)
+            screen.blit(surf, (x, yy))
+        else:
+            s = pygame.Surface((size, size), pygame.SRCALPHA)
+            pygame.draw.rect(s, (*CARD, alpha), s.get_rect(), border_radius=6)
+            pygame.draw.rect(s, (*DIM, min(alpha, 160)), s.get_rect(), width=1, border_radius=6)
+            screen.blit(s, (x, yy))
+
+    def draw_now_playing(y, height, status):
+        rect = pygame.Rect(24, y, W - 48, height)
+        pygame.draw.rect(screen, CARD, rect, border_radius=12)
+
+        cur = status.get("track_current")
+        prev = status.get("track_prev")
+        nxt = status.get("track_next")
+        cur_size, side_size, gap = 48, 30, 14
+        cx = W // 2
+        cy = rect.top + 10 + cur_size // 2
+
+        draw_art(prev, cx - cur_size // 2 - gap - side_size, cy - side_size // 2, side_size, 100)
+        draw_art(cur, cx - cur_size // 2, cy - cur_size // 2, cur_size, 255)
+        draw_art(nxt, cx + cur_size // 2 + gap, cy - side_size // 2, side_size, 100)
+
+        text_y = cy + cur_size // 2 + 8
+        if cur:
+            name_img = status_font.render(fit_text(status_font, cur["name"], rect.width - 24), True, TEXT)
+            artist_img = hint_font.render(fit_text(hint_font, cur["artist"], rect.width - 24), True, DIM)
+            screen.blit(name_img, (cx - name_img.get_width() // 2, text_y))
+            screen.blit(artist_img, (cx - artist_img.get_width() // 2, text_y + name_img.get_height() + 2))
+        else:
+            empty_img = hint_font.render("Nothing playing", True, DIM)
+            screen.blit(empty_img, (cx - empty_img.get_width() // 2, text_y))
+
     status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
-              "arduino": "Not connected", "arduino_state": "wait", "playing": False}
+              "arduino": "Not connected", "arduino_state": "wait", "playing": False,
+              "track_current": None, "track_prev": None, "track_next": None}
     stop_event = threading.Event()
     worker = threading.Thread(target=run_worker, args=(stop_event, status), daemon=True)
     worker.start()
@@ -769,8 +866,9 @@ def main():
 
             draw_card(92, "Spotify", status["spotify"], status["spotify_state"], t)
             draw_card(152, "Arduino", status["arduino"], status["arduino_state"], t)
+            draw_now_playing(214, 104, status)
 
-            eq_base, eq_max = 288, 60
+            eq_base, eq_max = 408, 60
             now = time.time()
             playing = status["playing"]
             if LAST_ACTION["name"] in ("play", "pause") and now - LAST_ACTION["time"] < 2.0:
