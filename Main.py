@@ -809,11 +809,11 @@ def main():
         text_img = status_font.render(fit_text(status_font, text, w - 48), True, DIM)
         screen.blit(text_img, (x + 36, y + 8 + label_img.get_height()))
 
-    # ---------- Cover wheel ----------
-    # Covers sit on a wheel: slot 0 is front-and-center, slots ±1 are the
-    # prev/next covers - smaller, lower and tilted, like points further around
-    # the rim. A track change animates every cover one slot along the rim,
-    # with the outgoing cover fading out at slot ±2.
+    # ---------- Cover carousel ----------
+    # Covers ride a horizontal conveyor: slot 0 is front-and-center, slots ±1
+    # are the prev/next covers - smaller and dimmer, on the same line. A track
+    # change slides every cover one slot along the belt, with the outgoing
+    # cover fading out at slot ±2.
     CAR_CX, CAR_CY = W // 2, 248
     COVER = 264             # on-screen size of the focused cover
     COVER_BASE = 300        # cached surface size (art is fetched at ~300px)
@@ -826,9 +826,7 @@ def main():
         scale = 1.0 - 0.46 * near - 0.14 * far
         alpha = 255 * (1.0 - 0.42 * near) * (1.0 - far)
         x = CAR_CX + SPREAD * s
-        y = CAR_CY + 24 * min(a, 1.4) ** 2
-        angle = -9.0 * max(-1.5, min(1.5, s))
-        return x, y, scale, alpha, angle
+        return x, CAR_CY, scale, alpha
 
     # Rounded-corner mask, drawn at 2x and downscaled so the corners antialias.
     _mask = pygame.Surface((COVER_BASE * 2, COVER_BASE * 2), pygame.SRCALPHA)
@@ -922,11 +920,11 @@ def main():
 
         items += [(prev, -1 + offset), (nxt, 1 + offset), (cur, offset)]
         for track, s in sorted(items, key=lambda it: -abs(it[1])):
-            x, y, scale, alpha, angle = slot_params(s)
+            x, y, scale, alpha = slot_params(s)
             if alpha <= 2:
                 continue
-            surf = pygame.transform.rotozoom(cover_surface(track), angle,
-                                             scale * COVER / COVER_BASE)
+            size = max(2, int(COVER * scale))
+            surf = pygame.transform.smoothscale(cover_surface(track), (size, size))
             surf.set_alpha(int(alpha))
             screen.blit(surf, surf.get_rect(center=(int(x), int(y))))
         return cur
