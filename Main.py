@@ -567,8 +567,10 @@ def run_worker(stop_event, status):
         try:
             q_items = sp.queue().get("queue", [])
             status["track_next"] = _track_info(q_items[0]) if q_items else None
+            status["track_next2"] = _track_info(q_items[1]) if len(q_items) > 1 else None
         except Exception:
             status["track_next"] = None
+            status["track_next2"] = None
 
     def update_spotify_status():
         nonlocal spotify_connected
@@ -810,27 +812,29 @@ def main():
         screen.blit(text_img, (x + 36, y + 8 + label_img.get_height()))
 
     # ---------- Cover carousel ----------
-    # Covers stand on a circular wheel viewed from the front, like a record
-    # carousel: slot 0 faces the viewer, slots ±1 are part-way around the rim.
-    # A track change spins the wheel one slot; the outgoing cover keeps going
-    # around the rim - curling back toward the center line while it shrinks,
-    # rises and fades into the background - instead of sliding off screen.
-    CAR_CX, CAR_CY = W // 2, 248
-    COVER = 264                 # on-screen size of the focused cover
+    # Covers stand on a circular wheel seen from the front and slightly above,
+    # like a record carousel on a table: slot 0 faces the viewer, slots ±1 are
+    # part-way around the rim, slots ±2 are at the back - raised, small and dim
+    # but visible over the top of the front cover thanks to the bird's-eye
+    # tilt. A track change spins the whole wheel one slot, so covers visibly
+    # rotate to the back on one side and around to the front on the other.
+    CAR_CX, CAR_CY = W // 2, 262
+    COVER = 232                 # on-screen size of the focused cover
     COVER_BASE = 300            # cached surface size (art is fetched at ~300px)
     STEP = math.radians(64)     # wheel angle between adjacent slots
     R_X = 326                   # wheel radius on screen, in px
     DEPTH = 2.4                 # wheel depth relative to camera distance
+    LIFT = 150                  # bird's-eye: how far the back of the wheel rises
     WHEEL_DUR = 0.65
 
     def slot_params(s):
         th = s * STEP
         c = math.cos(th)
-        z = DEPTH * (1.0 - c) / 2.0      # 0 at the front .. DEPTH at the back
-        persp = 1.0 / (1.0 + z)          # perspective shrink
+        back = (1.0 - c) / 2.0           # 0 at the front .. 1 at the back apex
+        persp = 1.0 / (1.0 + DEPTH * back)
         x = CAR_CX + R_X * math.sin(th) * persp
-        y = CAR_CY - 46 * (1.0 - persp)  # recede slightly upward with depth
-        alpha = 255 * ((c + 1.0) / 2.0) ** 1.6
+        y = CAR_CY - LIFT * back
+        alpha = 255 * ((c + 1.0) / 2.0) ** 0.8
         return x, y, persp, alpha
 
     # Rounded-corner mask, drawn at 2x and downscaled so the corners antialias.
@@ -891,21 +895,44 @@ def main():
     def ease(p):
         return p * p * (3.0 - 2.0 * p)
 
-    car = {"cur_id": None, "snap": (None, None, None), "anim": None}
+    # hist is the played-so-far order (UI-side memory, oldest first, capped);
+    # it fills the back-left of the wheel with real tracks, which the worker's
+    # single inferred "prev" can't. wheel maps slot -> track for slots -2..2.
+    car = {"cur_id": None, "anim": None, "hist": [],
+           "wheel": {-2: None, -1: None, 0: None, 1: None, 2: None}}
+
+    def _spin_backward(new_id, now):
+        # The button gesture is the most reliable direction signal; fall back
+        # to matching the new track against the wheel's prev slot (natural
+        # progression and queue jumps both read as forward).
+        if now - LAST_ACTION["time"] < 3.0 and LAST_ACTION["name"] in ("next", "prev"):
+            return LAST_ACTION["name"] == "prev"
+        old_prev = car["wheel"][-1]
+        return bool(old_prev and new_id == old_prev.get("id"))
 
     def draw_carousel(now, status, t, energy):
-        snap = (status.get("track_prev"), status.get("track_current"),
-                status.get("track_next"))
-        new_id = snap[1].get("id") if snap[1] else None
+        cur = status.get("track_current")
+        new_id = cur.get("id") if cur else None
         if new_id != car["cur_id"]:
-            old = car["snap"]
             if car["cur_id"] is not None and new_id is not None and car["anim"] is None:
-                # Skipping back spins the wheel the other way.
-                back = bool(old[0] and new_id == old[0].get("id"))
-                car["anim"] = {"t0": now, "dir": -1 if back else 1,
-                               "out": old[2] if back else old[0]}
+                if _spin_backward(new_id, now):
+                    # Outgoing: the far queue cover rotates off past the apex.
+                    car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][2], "base": 3}
+                    if car["hist"] and car["hist"][-1].get("id") == new_id:
+                        car["hist"].pop()
+                else:
+                    car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-2], "base": -3}
+                    if car["wheel"][0]:
+                        car["hist"] = (car["hist"] + [car["wheel"][0]])[-10:]
             car["cur_id"] = new_id
-        car["snap"] = snap
+        hist = car["hist"]
+        car["wheel"] = {
+            -2: hist[-2] if len(hist) >= 2 else None,
+            -1: hist[-1] if hist else status.get("track_prev"),
+            0: cur,
+            1: status.get("track_next"),
+            2: status.get("track_next2"),
+        }
 
         offset = 0.0
         items = []
@@ -916,14 +943,17 @@ def main():
                 car["anim"] = None
             else:
                 offset = anim["dir"] * (1.0 - ease(p))
-                items.append((anim["out"], (-2 if anim["dir"] > 0 else 2) + offset))
-        prev, cur, nxt = car["snap"]
+                if anim["out"]:
+                    items.append((anim["out"], anim["base"] + offset))
 
         glow = glow_surface(cur)
         glow.set_alpha(int(115 + 55 * energy * (0.5 + 0.5 * math.sin(t * 2.2))))
         screen.blit(glow, glow.get_rect(center=(CAR_CX, CAR_CY)))
 
-        items += [(prev, -1 + offset), (nxt, 1 + offset), (cur, offset)]
+        for slot, track in car["wheel"].items():
+            if track is None and abs(slot) > 1:
+                continue  # empty back slots stay empty; ±1 show placeholders
+            items.append((track, slot + offset))
         for track, s in sorted(items, key=lambda it: -abs(it[1])):
             x, y, scale, alpha = slot_params(s)
             if alpha <= 2:
@@ -936,7 +966,8 @@ def main():
 
     status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
               "arduino": "Not connected", "arduino_state": "wait", "playing": False,
-              "track_current": None, "track_prev": None, "track_next": None}
+              "track_current": None, "track_prev": None, "track_next": None,
+              "track_next2": None}
     stop_event = threading.Event()
     worker = threading.Thread(target=run_worker, args=(stop_event, status), daemon=True)
     worker.start()
