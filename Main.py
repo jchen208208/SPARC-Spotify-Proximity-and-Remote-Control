@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 import threading
-import urllib.request
+import requests
 import serial
 import serial.tools.list_ports
 import json
@@ -261,9 +261,11 @@ def fetch_album_art(url):
         if url in _art_cache:
             return _art_cache[url]
     try:
-        with urllib.request.urlopen(url, timeout=4) as resp:
-            data = resp.read()
-        surf = pygame.image.load(io.BytesIO(data))
+        # requests (not urllib) so certifi's CA bundle is used - macOS
+        # python.org builds have no system certs and fail SSL verification.
+        resp = requests.get(url, timeout=4)
+        resp.raise_for_status()
+        surf = pygame.image.load(io.BytesIO(resp.content))
     except Exception as e:
         print(f"  Album art error: {e}")
         surf = None
