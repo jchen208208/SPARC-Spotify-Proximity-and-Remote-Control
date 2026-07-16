@@ -172,7 +172,7 @@ def main():
     # API reports - after a back-skip, the song just left IS the next song,
     # but Spotify's queue endpoint can lag behind for a poll or two. Each pin
     # overrides its slot until the live data catches up (or it expires).
-    car = {"cur_id": None, "anim": None, "hist": [], "pins": {},
+    car = {"cur_id": None, "anim": None, "hist": [], "pins": {}, "seeded": False,
            "wheel": {-2: None, -1: None, 0: None, 1: None, 2: None}}
 
     def _spin_backward(new_id, now):
@@ -203,12 +203,25 @@ def main():
                         car["hist"] = (car["hist"] + [car["wheel"][0]])[-10:]
                     car["pins"] = {}
             car["cur_id"] = new_id
+        if not car["seeded"] and status.get("track_history") is not None:
+            # One-shot seed from Spotify's recently-played history, so the
+            # prev slots show real covers at startup. Skipped if spins have
+            # already built a history of their own (the seed is stale then).
+            if not car["hist"]:
+                car["hist"] = list(status["track_history"])
+            car["seeded"] = True
         hist = car["hist"]
+        wprev = status.get("track_prev")
+        nxt = status.get("track_next")
+        if wprev and nxt and wprev.get("id") == nxt.get("id"):
+            # After a back-skip the worker's inferred prev IS the next track;
+            # showing it on both sides of the wheel reads as a glitch.
+            wprev = None
         car["wheel"] = {
             -2: hist[-2] if len(hist) >= 2 else None,
-            -1: hist[-1] if hist else status.get("track_prev"),
+            -1: hist[-1] if hist else wprev,
             0: cur,
-            1: status.get("track_next"),
+            1: nxt,
             2: status.get("track_next2"),
         }
         for slot, (tr, expiry) in list(car["pins"].items()):
@@ -251,7 +264,7 @@ def main():
     status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
               "arduino": "Not connected", "arduino_state": "wait", "playing": False,
               "track_current": None, "track_prev": None, "track_next": None,
-              "track_next2": None}
+              "track_next2": None, "track_history": None}
     stop_event = threading.Event()
     worker = threading.Thread(target=run_worker, args=(stop_event, status), daemon=True)
     worker.start()

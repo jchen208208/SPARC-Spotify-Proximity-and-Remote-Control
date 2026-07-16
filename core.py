@@ -31,7 +31,8 @@ load_dotenv(os.path.join(BASE_DIR, '.env'))
 
 BAUD_RATE = 9600
 HANDSHAKE_TIMEOUT = 4.0  # a port must answer within this to count as our board
-SCOPE = "user-modify-playback-state user-read-playback-state user-read-currently-playing"
+SCOPE = ("user-modify-playback-state user-read-playback-state "
+         "user-read-currently-playing user-read-recently-played")
 
 VOLUME_STEP = 5
 VOLUME_INTERVAL = 0.2
@@ -603,7 +604,29 @@ def run_worker(stop_event, status):
             status["spotify"] = "No active Spotify device"
             status["spotify_state"] = "err"
 
+    def seed_history():
+        # Spotify's recently-played endpoint knows what came before this
+        # session, so the wheel's prev slots get real covers from the first
+        # frame instead of waiting for tracks to change while the app runs.
+        # One-shot: once the UI consumes it, its own history takes over.
+        try:
+            items = sp.current_user_recently_played(limit=6).get("items", [])
+        except Exception as e:
+            print(f"  Recently played unavailable: {e}")
+            return
+        hist, last_id = [], track_state["current_id"]
+        for it in items:  # newest first
+            tr = it.get("track")
+            if not tr or not tr.get("id") or tr["id"] == last_id:
+                continue  # skip the playing track and consecutive repeats
+            hist.append(_track_info(tr))
+            last_id = tr["id"]
+            if len(hist) == 2:
+                break
+        status["track_history"] = hist[::-1]  # oldest first, like the UI's hist
+
     update_spotify_status()
+    seed_history()
     last_spotify_check = time.time()
 
     while not stop_event.is_set():
