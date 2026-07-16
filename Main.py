@@ -737,8 +737,13 @@ def main():
     W, H = 480, 460
     logo = None
     try:
+        # icon.png is the macOS-style app icon (white rounded plate, blue
+        # symbol); logo.png stays the in-window header art.
+        pygame.display.set_icon(pygame.image.load(os.path.join(ASSET_DIR, "icon.png")))
+    except Exception as e:
+        print(f"  Icon error: {e}")
+    try:
         logo = pygame.image.load(os.path.join(ASSET_DIR, "logo.png"))
-        pygame.display.set_icon(logo)
     except Exception as e:
         print(f"  Logo error: {e}")
     screen = pygame.display.set_mode((W, H))
