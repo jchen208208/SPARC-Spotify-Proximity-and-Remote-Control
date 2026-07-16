@@ -810,23 +810,28 @@ def main():
         screen.blit(text_img, (x + 36, y + 8 + label_img.get_height()))
 
     # ---------- Cover carousel ----------
-    # Covers ride a horizontal conveyor: slot 0 is front-and-center, slots ±1
-    # are the prev/next covers - smaller and dimmer, on the same line. A track
-    # change slides every cover one slot along the belt, with the outgoing
-    # cover fading out at slot ±2.
+    # Covers stand on a circular wheel viewed from the front, like a record
+    # carousel: slot 0 faces the viewer, slots ±1 are part-way around the rim.
+    # A track change spins the wheel one slot; the outgoing cover keeps going
+    # around the rim - curling back toward the center line while it shrinks,
+    # rises and fades into the background - instead of sliding off screen.
     CAR_CX, CAR_CY = W // 2, 248
-    COVER = 264             # on-screen size of the focused cover
-    COVER_BASE = 300        # cached surface size (art is fetched at ~300px)
-    SPREAD = 178            # slot-to-slot horizontal distance
-    WHEEL_DUR = 0.55
+    COVER = 264                 # on-screen size of the focused cover
+    COVER_BASE = 300            # cached surface size (art is fetched at ~300px)
+    STEP = math.radians(64)     # wheel angle between adjacent slots
+    R_X = 326                   # wheel radius on screen, in px
+    DEPTH = 2.4                 # wheel depth relative to camera distance
+    WHEEL_DUR = 0.65
 
     def slot_params(s):
-        a = abs(s)
-        near, far = min(a, 1.0), max(0.0, min(a - 1.0, 1.0))
-        scale = 1.0 - 0.46 * near - 0.14 * far
-        alpha = 255 * (1.0 - 0.42 * near) * (1.0 - far)
-        x = CAR_CX + SPREAD * s
-        return x, CAR_CY, scale, alpha
+        th = s * STEP
+        c = math.cos(th)
+        z = DEPTH * (1.0 - c) / 2.0      # 0 at the front .. DEPTH at the back
+        persp = 1.0 / (1.0 + z)          # perspective shrink
+        x = CAR_CX + R_X * math.sin(th) * persp
+        y = CAR_CY - 46 * (1.0 - persp)  # recede slightly upward with depth
+        alpha = 255 * ((c + 1.0) / 2.0) ** 1.6
+        return x, y, persp, alpha
 
     # Rounded-corner mask, drawn at 2x and downscaled so the corners antialias.
     _mask = pygame.Surface((COVER_BASE * 2, COVER_BASE * 2), pygame.SRCALPHA)
