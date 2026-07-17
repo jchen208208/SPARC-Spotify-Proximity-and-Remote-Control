@@ -566,7 +566,7 @@ def run_worker(stop_event, status):
         info = _track_info(item)
         try:
             q_items = sp.queue().get("queue", [])
-            qinfos = [_track_info(q) for q in q_items[:4]]
+            qinfos = [_track_info(q) for q in q_items[:5]]
         except Exception:
             qinfos = []
         cur_id = item.get("id")
@@ -625,7 +625,7 @@ def run_worker(stop_event, status):
                 continue
             hist.append(_track_info(tr))
             last_id = tr["id"]
-            if len(hist) == 4:
+            if len(hist) == 5:
                 break
         status["track_history"] = hist[::-1]  # oldest first, like the UI's hist
 
