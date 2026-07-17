@@ -100,7 +100,9 @@ def main():
     CAR_CX, CAR_CY = W // 2, 262
     COVER = 195                 # on-screen size of the focused cover
     COVER_BASE = 300            # cached surface size (art is fetched at ~300px)
-    RING_MIN = 8                # fewest seats the ring will shrink to
+    RING_SEATS = 11             # one seat per wheel slot; the ring never
+                                # shrinks when slots are empty, so neighbouring
+                                # records always overlap by the same sliver
     R_X = 175                   # ring horizontal radius on screen, in px
     E_Y = 55                    # ring vertical half-height: the circle seen at
                                 # a shallow bird's-eye tilt becomes this ellipse
@@ -393,8 +395,7 @@ def main():
             else:
                 amult = pe if (anim and slot == anim["in"]) else 1.0
             items.append((track, slot + offset, amult))
-        occupied = sum(1 for tr in car["wheel"].values() if tr)
-        seats = ring_seats(max(RING_MIN, occupied))
+        seats = ring_seats(RING_SEATS)
         drawlist = []
         for track, s, amult in items:
             x, y, scale, alpha = slot_params(s, seats)
