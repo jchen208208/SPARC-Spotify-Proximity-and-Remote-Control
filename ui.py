@@ -89,6 +89,14 @@ def main():
     # but visible over the top of the front cover thanks to the bird's-eye
     # tilt. A track change spins the whole wheel one slot, so covers visibly
     # rotate to the back on one side and around to the front on the other.
+    #
+    # That spin is a *guess* - it assumes the new track is exactly one step
+    # forward or back from the old one, and picks a spin direction on that
+    # assumption. A jump to an arbitrary track in the same playlist (picked
+    # from Spotify itself, a queue reorder, anything non-adjacent) breaks
+    # that assumption, so it's handled as its own case: no spin, just a
+    # crossfade from the old cover to whatever's actually there now. See
+    # _classify_transition.
     CAR_CX, CAR_CY = W // 2, 262
     COVER = 195                 # on-screen size of the focused cover
     COVER_BASE = 300            # cached surface size (art is fetched at ~300px)
@@ -98,6 +106,7 @@ def main():
                                 # a shallow bird's-eye tilt becomes this ellipse
     KS = 2.8                    # size falloff with depth
     WHEEL_DUR = 0.65
+    FADE_DUR = 0.45             # crossfade duration for a same-context jump
     SPIN_DPS = 45.0             # playing record's spin speed (deg/s, ~8s per turn)
 
     # The records sit on a true ellipse (a circle in perspective). Seats are
@@ -258,30 +267,43 @@ def main():
     # API reports - after a back-skip, the song just left IS the next song,
     # but Spotify's queue endpoint can lag behind for a poll or two. Each pin
     # overrides its slot until the live data catches up (or it expires).
+    # fade holds an in-flight crossfade (see _classify_transition's "jump"
+    # case): a snapshot of the wheel as it was right before the jump, plus a
+    # start time, so the old covers can be faded out in place while the new
+    # ones (already the live, correct wheel) fade in over them.
     car = {"cur_id": None, "anim": None, "hist": [], "pins": {}, "seeded": False,
-            "wheel": {s: None for s in range(-5, 6)}}
+            "wheel": {s: None for s in range(-5, 6)}, "fade": None}
 
-    def _spin_backward(new_id, now):
-        # Forward progression always lands on the previously-known "next"
-        # track (queue head, respecting pins). Anything else - back-skip,
-        # cold-start back press, queue jump - is backward. This doesn't
-        # depend on gesture timing, which is what let a slow round trip
-        # (cold start especially) misfire as forward.
+    def _classify_transition(new_id, now):
+        # Forward and backward are the two moves we can predict: forward
+        # always lands on the previously-known "next" track (queue head,
+        # respecting pins); backward always lands back on whatever was
+        # current a moment ago (the freshest history entry). Anything else -
+        # a track picked from elsewhere in the same playlist, a skip to a
+        # non-adjacent point in the queue, a reorder, etc. - is a jump: we
+        # know the track changed, but not which "direction" it came from, so
+        # guessing a spin direction would just as often be wrong as right.
         old_next = car["wheel"][1]
-        if old_next is not None:
-            return new_id != old_next.get("id")
-        # No known "next" yet (e.g. before the first poll populates the
-        # queue) - fall back to the gesture.
-        if LAST_ACTION["name"] in ("next", "prev") and now - LAST_ACTION["time"] < 8.0:
-            return LAST_ACTION["name"] == "prev"
-        return False
+        old_prev = car["wheel"][-1]
+        if old_next is not None and new_id == old_next.get("id"):
+            return "forward"
+        if old_prev is not None and new_id == old_prev.get("id"):
+            return "backward"
+        if old_next is None and old_prev is None:
+            # Cold start - nothing on the wheel yet to compare against.
+            # Fall back to whatever gesture was just sent, if any.
+            if LAST_ACTION["name"] in ("next", "prev") and now - LAST_ACTION["time"] < 8.0:
+                return "backward" if LAST_ACTION["name"] == "prev" else "forward"
+        return "jump"
 
     def draw_carousel(now, status, t, energy, spin_deg):
         cur = status.get("track_current")
         new_id = cur.get("id") if cur else None
         if new_id != car["cur_id"]:
-            if car["cur_id"] is not None and new_id is not None and car["anim"] is None:
-                if _spin_backward(new_id, now):
+            if (car["cur_id"] is not None and new_id is not None
+                    and car["anim"] is None and car["fade"] is None):
+                transition = _classify_transition(new_id, now)
+                if transition == "backward":
                     # Outgoing: the far queue cover rotates around the back,
                     # crossfading with the history cover entering at slot -5.
                     car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][5],
@@ -290,12 +312,21 @@ def main():
                         car["hist"].pop()
                     car["pins"] = {s: (car["wheel"][s - 1], now + 6.0)
                                    for s in range(1, 6) if car["wheel"][s - 1]}
-                else:
+                elif transition == "forward":
                     car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-5],
                                    "base": -6, "in": 5}
                     if car["wheel"][0]:
                         car["hist"] = (car["hist"] + [car["wheel"][0]])[-12:]
                     car["pins"] = {}
+                else:
+                    # Jump: no spin, no pin guesses about the new queue - just
+                    # crossfade every slot from its old cover to whatever's
+                    # really there now. The track we jumped away from was
+                    # still just playing, so it still becomes history.
+                    if car["wheel"][0]:
+                        car["hist"] = (car["hist"] + [car["wheel"][0]])[-12:]
+                    car["pins"] = {}
+                    car["fade"] = {"t0": now, "wheel": dict(car["wheel"])}
             car["cur_id"] = new_id
         hist = car["hist"]
         q = status.get("track_queue") or []
@@ -326,6 +357,7 @@ def main():
         offset, pe = 0.0, 1.0
         items = []
         anim = car["anim"]
+        fade = car["fade"]
         if anim:
             p = (now - anim["t0"]) / WHEEL_DUR
             if p >= 1.0:
@@ -335,6 +367,19 @@ def main():
                 offset = anim["dir"] * (1.0 - pe)
                 if anim["out"]:
                     items.append((anim["out"], anim["base"] + offset, 1.0 - pe))
+        elif fade:
+            p = (now - fade["t0"]) / FADE_DUR
+            if p >= 1.0:
+                car["fade"] = fade = None
+            else:
+                # Same slot, no lateral movement - the old cover just fades
+                # out while the new one (added below, from the live wheel)
+                # fades in on top of it.
+                pe = ease(p)
+                for slot, track in fade["wheel"].items():
+                    if track is None and abs(slot) > 1:
+                        continue  # matches the live-wheel filter just below
+                    items.append((track, slot, 1.0 - pe))
 
         glow = glow_surface(cur)
         glow.set_alpha(int(115 + 55 * energy * (0.5 + 0.5 * math.sin(t * 2.2))))
@@ -343,7 +388,10 @@ def main():
         for slot, track in car["wheel"].items():
             if track is None and abs(slot) > 1:
                 continue  # empty back slots stay empty; ±1 show placeholders
-            amult = pe if (anim and slot == anim["in"]) else 1.0
+            if fade:
+                amult = pe  # fading in uniformly, in place
+            else:
+                amult = pe if (anim and slot == anim["in"]) else 1.0
             items.append((track, slot + offset, amult))
         occupied = sum(1 for tr in car["wheel"].values() if tr)
         seats = ring_seats(max(RING_MIN, occupied))
@@ -367,10 +415,10 @@ def main():
             screen.blit(surf, surf.get_rect(center=(int(x), int(y))))
         return cur
 
-    status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
+    status = status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
               "arduino": "Not connected", "arduino_state": "wait", "playing": False,
               "track_current": None, "track_prev": None, "track_queue": [],
-              "track_history": None}
+              "track_history": None, "context_uri": None}
     stop_event = threading.Event()
     worker = threading.Thread(target=run_worker, args=(stop_event, status), daemon=True)
     worker.start()
@@ -381,6 +429,7 @@ def main():
     energy = 0.0
     spin_deg = 0.0
     was_connected = False
+    last_context_uri = None
     running = True
     try:
         while running:
@@ -391,12 +440,28 @@ def main():
             t = time.time() - t0
             now = time.time()
             connected = status["spotify_state"] == "ok" and status["arduino_state"] == "ok"
+            connected = status["spotify_state"] == "ok" and status["arduino_state"] == "ok"
             if connected and not was_connected:
-                car["hist"] = []
+                # Reconnecting shouldn't wipe the played-so-far history - only
+                # the animation/pin state, which can be left stale mid-drop.
                 car["pins"] = {}
                 car["cur_id"] = None
                 car["anim"] = None
+                car["fade"] = None
             was_connected = connected
+
+            context_uri = status.get("context_uri")
+            if context_uri and context_uri != last_context_uri:
+                if last_context_uri is not None:
+                    # Switched playlist/album/context - queue and history
+                    # belong to the old one, so hard-cut the wheel instead of
+                    # animating through or carrying over stale covers.
+                    car["hist"] = []
+                    car["pins"] = {}
+                    car["cur_id"] = None
+                    car["anim"] = None
+                    car["fade"] = None
+                last_context_uri = context_uri
             playing = status["playing"]
             if LAST_ACTION["name"] in ("play", "pause") and now - LAST_ACTION["time"] < 2.0:
                 playing = LAST_ACTION["name"] == "play"

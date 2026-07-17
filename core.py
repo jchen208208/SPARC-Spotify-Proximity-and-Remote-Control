@@ -589,6 +589,8 @@ def run_worker(stop_event, status):
                 item = playback.get("item")
                 if item:
                     _update_track_state(item)
+                context = playback.get("context")
+                status["context_uri"] = context.get("uri") if context else None
             else:
                 devices = sp.devices().get("devices", [])
                 spotify_connected = bool(devices)
