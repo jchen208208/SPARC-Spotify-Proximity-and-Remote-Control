@@ -157,6 +157,8 @@ def main():
         th = t0 + (t1 - t0) * (f - i)
         c = math.cos(th)
         back = (1.0 - c) / 2.0           # 0 at the front .. 1 at the back apex
+        # Queue on the right: advancing a track carries the front of the
+        # carousel leftward.
         x = CAR_CX + R_X * math.sin(th)
         y = CAR_CY - E_Y * (1.0 - c)
         scale = 1.0 / (1.0 + KS * back)
