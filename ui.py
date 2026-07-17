@@ -206,13 +206,19 @@ def main():
            "wheel": {-2: None, -1: None, 0: None, 1: None, 2: None}}
 
     def _spin_backward(new_id, now):
-        # The button gesture is the most reliable direction signal; fall back
-        # to matching the new track against the wheel's prev slot (natural
-        # progression and queue jumps both read as forward).
-        if now - LAST_ACTION["time"] < 3.0 and LAST_ACTION["name"] in ("next", "prev"):
+        # Forward progression always lands on the previously-known "next"
+        # track (queue head, respecting pins). Anything else - back-skip,
+        # cold-start back press, queue jump - is backward. This doesn't
+        # depend on gesture timing, which is what let a slow round trip
+        # (cold start especially) misfire as forward.
+        old_next = car["wheel"][1]
+        if old_next is not None:
+            return new_id != old_next.get("id")
+        # No known "next" yet (e.g. before the first poll populates the
+        # queue) - fall back to the gesture.
+        if LAST_ACTION["name"] in ("next", "prev") and now - LAST_ACTION["time"] < 8.0:
             return LAST_ACTION["name"] == "prev"
-        old_prev = car["wheel"][-1]
-        return bool(old_prev and new_id == old_prev.get("id"))
+        return False
 
     def draw_carousel(now, status, t, energy, spin_deg):
         cur = status.get("track_current")
@@ -221,13 +227,14 @@ def main():
             if car["cur_id"] is not None and new_id is not None and car["anim"] is None:
                 if _spin_backward(new_id, now):
                     # Outgoing: the far queue cover rotates off past the apex.
-                    car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][4], "base": 5}
-                    if car["hist"] and car["hist"][-1].get("id") == new_id:
+                    car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][2], "base": 3}
+                    if car["hist"]:
                         car["hist"].pop()
-                    car["pins"] = {s: (car["wheel"][s - 1], now + 6.0)
-                                   for s in (1, 2, 3, 4) if car["wheel"][s - 1]}
+                    car["pins"] = {s: (tr, now + 6.0)
+                                   for s, tr in ((1, car["wheel"][0]), (2, car["wheel"][1]))
+                                   if tr}
                 else:
-                    car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-4], "base": -5}
+                    car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-2], "base": -3}
                     if car["wheel"][0]:
                         car["hist"] = (car["hist"] + [car["wheel"][0]])[-10:]
                     car["pins"] = {}
