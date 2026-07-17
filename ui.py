@@ -91,12 +91,12 @@ def main():
     CAR_CX, CAR_CY = W // 2, 262
     COVER = 200                 # on-screen size of the focused cover
     COVER_BASE = 300            # cached surface size (art is fetched at ~300px)
-    STEP = math.radians(38)     # wheel angle between adjacent slots
-    R_X = 300                   # wheel radius on screen, in px
+    STEP = math.radians(32)     # wheel angle between adjacent slots
+    R_X = 290                   # wheel radius on screen, in px
     KX = 1.1                    # perspective fold for positions
     KS = 3.2                    # size falloff with depth (steeper than KX so
                                 # the playing record stays clearly biggest)
-    LIFT = 150                  # bird's-eye: how far the back of the wheel rises
+    LIFT = 140                  # bird's-eye: how far the back of the wheel rises
     WHEEL_DUR = 0.65
     SPIN_DPS = 45.0             # playing record's spin speed (deg/s, ~8s per turn)
 
@@ -107,7 +107,7 @@ def main():
         x = CAR_CX + R_X * math.sin(th) / (1.0 + KX * back)
         y = CAR_CY - LIFT * back
         scale = 1.0 / (1.0 + KS * back)
-        alpha = 255 * ((c + 1.0) / 2.0) ** 0.55
+        alpha = 255 * ((c + 1.0) / 2.0) ** 0.45
         return x, y, scale, alpha
 
     # Every cover is a vinyl record: black disc with faint grooves, the album
@@ -197,13 +197,13 @@ def main():
 
     # hist is the played-so-far order (UI-side memory, oldest first, capped);
     # it fills the back-left of the wheel with real tracks, which the worker's
-    # single inferred "prev" can't. wheel maps slot -> track for slots -2..2.
+    # single inferred "prev" can't. wheel maps slot -> track for slots -5..5.
     # pins hold tracks the UI knows belong in a slot ahead of what the queue
     # API reports - after a back-skip, the song just left IS the next song,
     # but Spotify's queue endpoint can lag behind for a poll or two. Each pin
     # overrides its slot until the live data catches up (or it expires).
     car = {"cur_id": None, "anim": None, "hist": [], "pins": {}, "seeded": False,
-           "wheel": {-2: None, -1: None, 0: None, 1: None, 2: None}}
+           "wheel": {s: None for s in range(-5, 6)}}
 
     def _spin_backward(new_id, now):
         # Forward progression always lands on the previously-known "next"
@@ -227,16 +227,15 @@ def main():
             if car["cur_id"] is not None and new_id is not None and car["anim"] is None:
                 if _spin_backward(new_id, now):
                     # Outgoing: the far queue cover rotates off past the apex.
-                    car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][2], "base": 3}
+                    car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][5], "base": 6}
                     if car["hist"]:
                         car["hist"].pop()
-                    car["pins"] = {s: (tr, now + 6.0)
-                                   for s, tr in ((1, car["wheel"][0]), (2, car["wheel"][1]))
-                                   if tr}
+                    car["pins"] = {s: (car["wheel"][s - 1], now + 6.0)
+                                   for s in range(1, 6) if car["wheel"][s - 1]}
                 else:
-                    car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-2], "base": -3}
+                    car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-5], "base": -6}
                     if car["wheel"][0]:
-                        car["hist"] = (car["hist"] + [car["wheel"][0]])[-10:]
+                        car["hist"] = (car["hist"] + [car["wheel"][0]])[-12:]
                     car["pins"] = {}
             car["cur_id"] = new_id
         if not car["seeded"] and status.get("track_history") is not None:
@@ -248,7 +247,7 @@ def main():
             car["seeded"] = True
         hist = car["hist"]
         q = status.get("track_queue") or []
-        right = [q[i] if i < len(q) else None for i in range(4)]
+        right = [q[i] if i < len(q) else None for i in range(5)]
         right_ids = {tr["id"] for tr in right + [cur] if tr and tr.get("id")}
 
         def left_slot(k):
@@ -260,7 +259,7 @@ def main():
             return tr if tr and tr.get("id") not in right_ids else None
 
         car["wheel"] = {0: cur}
-        for k in range(1, 5):
+        for k in range(1, 6):
             car["wheel"][-k] = left_slot(k)
             car["wheel"][k] = right[k - 1]
         for slot, (tr, expiry) in list(car["pins"].items()):
