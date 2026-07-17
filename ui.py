@@ -89,25 +89,78 @@ def main():
     # tilt. A track change spins the whole wheel one slot, so covers visibly
     # rotate to the back on one side and around to the front on the other.
     CAR_CX, CAR_CY = W // 2, 262
-    COVER = 200                 # on-screen size of the focused cover
+    COVER = 195                 # on-screen size of the focused cover
     COVER_BASE = 300            # cached surface size (art is fetched at ~300px)
-    STEP = math.radians(32)     # wheel angle between adjacent slots
-    R_X = 290                   # wheel radius on screen, in px
-    KX = 1.1                    # perspective fold for positions
-    KS = 3.2                    # size falloff with depth (steeper than KX so
-                                # the playing record stays clearly biggest)
-    LIFT = 140                  # bird's-eye: how far the back of the wheel rises
+    RING_MIN = 8                # fewest seats the ring will shrink to
+    R_X = 175                   # ring horizontal radius on screen, in px
+    E_Y = 55                    # ring vertical half-height: the circle seen at
+                                # a shallow bird's-eye tilt becomes this ellipse
+    KS = 2.8                    # size falloff with depth
     WHEEL_DUR = 0.65
     SPIN_DPS = 45.0             # playing record's spin speed (deg/s, ~8s per turn)
 
-    def slot_params(s):
-        th = s * STEP
+    # The records sit on a true ellipse (a circle in perspective). Seats are
+    # NOT evenly spaced by angle - even angles bunch discs at the sides and
+    # scatter them at the back. Instead each gap gets arc length proportional
+    # to the two discs beside it, so every record overlaps its neighbour by
+    # the same slight amount all the way around, and the ring closes with no
+    # hole at the back.
+    _ELL_N = 720
+    _ell_th = [2.0 * math.pi * i / _ELL_N for i in range(_ELL_N + 1)]
+    _ell_arc = [0.0]
+    for _i in range(1, len(_ell_th)):
+        _p0 = (R_X * math.sin(_ell_th[_i - 1]), E_Y * math.cos(_ell_th[_i - 1]))
+        _p1 = (R_X * math.sin(_ell_th[_i]), E_Y * math.cos(_ell_th[_i]))
+        _ell_arc.append(_ell_arc[-1] + math.dist(_p0, _p1))
+    _ELL_P = _ell_arc[-1]
+
+    def _theta_at_arc(a):
+        a %= _ELL_P
+        lo, hi = 0, _ELL_N
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if _ell_arc[mid] < a:
+                lo = mid + 1
+            else:
+                hi = mid
+        i = max(1, lo)
+        seg = _ell_arc[i] - _ell_arc[i - 1]
+        f = (a - _ell_arc[i - 1]) / seg if seg else 0.0
+        return _ell_th[i - 1] + f * (_ell_th[i] - _ell_th[i - 1])
+
+    def _disc_scale(th):
+        back = (1.0 - math.cos(th)) / 2.0
+        return 1.0 / (1.0 + KS * back)
+
+    _seats_cache = {}
+
+    def ring_seats(n):
+        if n not in _seats_cache:
+            seats = [2.0 * math.pi * k / n for k in range(n)]
+            for _ in range(3):  # sizes depend on angles and vice versa; settle
+                d = [_disc_scale(t) for t in seats]
+                gaps = [(d[k] + d[(k + 1) % n]) / 2.0 for k in range(n)]
+                total = sum(gaps)
+                a, seats = 0.0, []
+                for k in range(n):
+                    seats.append(_theta_at_arc(a))
+                    a += gaps[k] / total * _ELL_P
+            _seats_cache[n] = seats
+        return _seats_cache[n]
+
+    def slot_params(s, seats):
+        n = len(seats)
+        f = s % n
+        i = int(f)
+        t0 = seats[i]
+        t1 = seats[(i + 1) % n] + (2.0 * math.pi if i + 1 >= n else 0.0)
+        th = t0 + (t1 - t0) * (f - i)
         c = math.cos(th)
         back = (1.0 - c) / 2.0           # 0 at the front .. 1 at the back apex
-        x = CAR_CX + R_X * math.sin(th) / (1.0 + KX * back)
-        y = CAR_CY - LIFT * back
+        x = CAR_CX + R_X * math.sin(th)
+        y = CAR_CY - E_Y * (1.0 - c)
         scale = 1.0 / (1.0 + KS * back)
-        alpha = 255 * ((c + 1.0) / 2.0) ** 0.45
+        alpha = 255 * (0.33 + 0.67 * ((c + 1.0) / 2.0) ** 0.7)
         return x, y, scale, alpha
 
     # Every cover is a vinyl record: black disc with faint grooves, the album
@@ -226,14 +279,17 @@ def main():
         if new_id != car["cur_id"]:
             if car["cur_id"] is not None and new_id is not None and car["anim"] is None:
                 if _spin_backward(new_id, now):
-                    # Outgoing: the far queue cover rotates off past the apex.
-                    car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][5], "base": 6}
+                    # Outgoing: the far queue cover rotates around the back,
+                    # crossfading with the history cover entering at slot -5.
+                    car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][5],
+                                   "base": 6, "in": -5}
                     if car["hist"]:
                         car["hist"].pop()
                     car["pins"] = {s: (car["wheel"][s - 1], now + 6.0)
                                    for s in range(1, 6) if car["wheel"][s - 1]}
                 else:
-                    car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-5], "base": -6}
+                    car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-5],
+                                   "base": -6, "in": 5}
                     if car["wheel"][0]:
                         car["hist"] = (car["hist"] + [car["wheel"][0]])[-12:]
                     car["pins"] = {}
@@ -269,17 +325,18 @@ def main():
             else:
                 car["wheel"][slot] = tr
 
-        offset = 0.0
+        offset, pe = 0.0, 1.0
         items = []
         anim = car["anim"]
         if anim:
             p = (now - anim["t0"]) / WHEEL_DUR
             if p >= 1.0:
-                car["anim"] = None
+                car["anim"] = anim = None
             else:
-                offset = anim["dir"] * (1.0 - ease(p))
+                pe = ease(p)
+                offset = anim["dir"] * (1.0 - pe)
                 if anim["out"]:
-                    items.append((anim["out"], anim["base"] + offset))
+                    items.append((anim["out"], anim["base"] + offset, 1.0 - pe))
 
         glow = glow_surface(cur)
         glow.set_alpha(int(115 + 55 * energy * (0.5 + 0.5 * math.sin(t * 2.2))))
@@ -288,12 +345,17 @@ def main():
         for slot, track in car["wheel"].items():
             if track is None and abs(slot) > 1:
                 continue  # empty back slots stay empty; ±1 show placeholders
-            items.append((track, slot + offset))
+            amult = pe if (anim and slot == anim["in"]) else 1.0
+            items.append((track, slot + offset, amult))
+        occupied = sum(1 for tr in car["wheel"].values() if tr)
+        seats = ring_seats(max(RING_MIN, occupied))
+        drawlist = []
+        for track, s, amult in items:
+            x, y, scale, alpha = slot_params(s, seats)
+            if alpha * amult > 2:
+                drawlist.append((scale, x, y, alpha * amult, track))
         anim_active = car["anim"] is not None
-        for track, s in sorted(items, key=lambda it: -abs(it[1])):
-            x, y, scale, alpha = slot_params(s)
-            if alpha <= 2:
-                continue
+        for scale, x, y, alpha, track in sorted(drawlist, key=lambda d: d[0]):
             size = max(2, int(COVER * scale))
             base = cover_surface(track)
             if track and track.get("id") == car["cur_id"]:
