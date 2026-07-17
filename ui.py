@@ -96,6 +96,7 @@ def main():
     DEPTH = 2.4                 # wheel depth relative to camera distance
     LIFT = 150                  # bird's-eye: how far the back of the wheel rises
     WHEEL_DUR = 0.65
+    SPIN_DPS = 45.0             # playing record's spin speed (deg/s, ~8s per turn)
 
     def slot_params(s):
         th = s * STEP
@@ -107,20 +108,38 @@ def main():
         alpha = 255 * ((c + 1.0) / 2.0) ** 0.8
         return x, y, persp, alpha
 
-    # Rounded-corner mask, drawn at 2x and downscaled so the corners antialias.
-    _mask = pygame.Surface((COVER_BASE * 2, COVER_BASE * 2), pygame.SRCALPHA)
-    pygame.draw.rect(_mask, (255, 255, 255, 255), _mask.get_rect(), border_radius=40)
-    _mask = pygame.transform.smoothscale(_mask, (COVER_BASE, COVER_BASE))
+    # Every cover is a vinyl record: black disc with faint grooves, the album
+    # art cropped to a circle inside, and a spindle dot dead center. Discs are
+    # drawn at 2x and downscaled so the circle edges antialias.
+    ART_FRAC = 0.72  # art circle diameter as a fraction of the disc
+    _D2 = COVER_BASE * 2
+    _art_d2 = int(_D2 * ART_FRAC)
+    _art_mask = pygame.Surface((_art_d2, _art_d2), pygame.SRCALPHA)
+    pygame.draw.circle(_art_mask, (255, 255, 255, 255),
+                       (_art_d2 // 2, _art_d2 // 2), _art_d2 // 2)
 
-    placeholder = pygame.Surface((COVER_BASE, COVER_BASE), pygame.SRCALPHA)
-    pygame.draw.rect(placeholder, (*CARD, 255), placeholder.get_rect(), border_radius=20)
-    pygame.draw.rect(placeholder, (*DIM, 90), placeholder.get_rect(), width=2, border_radius=20)
-    for i, blue in enumerate(LOGO_BLUES):
-        bh = 46 + 22 * (i % 2)
-        pygame.draw.rect(placeholder, (*blue, 130),
-                         (COVER_BASE // 2 - 44 + i * 24, COVER_BASE // 2 + 40 - bh, 14, bh),
-                         border_radius=4)
+    def make_disc(art):
+        d2 = pygame.Surface((_D2, _D2), pygame.SRCALPHA)
+        c = _D2 // 2
+        pygame.draw.circle(d2, (16, 16, 21), (c, c), c)                  # vinyl body
+        for rr in (0.80, 0.86, 0.92):                                    # grooves
+            pygame.draw.circle(d2, (52, 54, 64), (c, c), int(c * rr), width=2)
+        pygame.draw.circle(d2, (104, 107, 120), (c, c), c - 1, width=2)  # rim light
+        if art is not None:
+            a = pygame.transform.smoothscale(art, (_art_d2, _art_d2)).convert_alpha()
+            a.blit(_art_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+            d2.blit(a, (c - _art_d2 // 2, c - _art_d2 // 2))
+        else:
+            pygame.draw.circle(d2, CARD, (c, c), _art_d2 // 2)
+            for i, blue in enumerate(LOGO_BLUES):
+                bh = 92 + 44 * (i % 2)
+                pygame.draw.rect(d2, blue, (c - 88 + i * 48, c + 80 - bh, 28, bh),
+                                 border_radius=8)
+        pygame.draw.circle(d2, (10, 10, 14), (c, c), int(_D2 * 0.032))   # spindle
+        pygame.draw.circle(d2, (120, 122, 134), (c, c), int(_D2 * 0.032), width=2)
+        return pygame.transform.smoothscale(d2, (COVER_BASE, COVER_BASE))
 
+    placeholder = make_disc(None)
     cover_cache = {}
 
     def cover_surface(track):
@@ -131,9 +150,7 @@ def main():
         if key not in cover_cache:
             if len(cover_cache) > 32:
                 cover_cache.clear()
-            s = pygame.transform.smoothscale(art, (COVER_BASE, COVER_BASE)).convert_alpha()
-            s.blit(_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-            cover_cache[key] = s
+            cover_cache[key] = make_disc(art)
         return cover_cache[key]
 
     # Ambient glow behind the wheel, tinted with the current cover's colour.
@@ -184,7 +201,7 @@ def main():
         old_prev = car["wheel"][-1]
         return bool(old_prev and new_id == old_prev.get("id"))
 
-    def draw_carousel(now, status, t, energy):
+    def draw_carousel(now, status, t, energy, spin_deg):
         cur = status.get("track_current")
         new_id = cur.get("id") if cur else None
         if new_id != car["cur_id"]:
@@ -256,7 +273,12 @@ def main():
             if alpha <= 2:
                 continue
             size = max(2, int(COVER * scale))
-            surf = pygame.transform.smoothscale(cover_surface(track), (size, size))
+            base = cover_surface(track)
+            if track and track.get("id") == car["cur_id"]:
+                # Only the playing record spins (clockwise, like a turntable).
+                surf = pygame.transform.rotozoom(base, -spin_deg, size / COVER_BASE)
+            else:
+                surf = pygame.transform.smoothscale(base, (size, size))
             surf.set_alpha(int(alpha))
             screen.blit(surf, surf.get_rect(center=(int(x), int(y))))
         return cur
@@ -273,6 +295,7 @@ def main():
     t0 = time.time()
     eq_t = 0.0
     energy = 0.0
+    spin_deg = 0.0
     running = True
     try:
         while running:
@@ -289,6 +312,9 @@ def main():
             dt = clock.get_time() / 1000.0
             energy += ((1.0 if (connected and playing) else 0.0) - energy) * min(1.0, dt * 7.0)
             eq_t += dt * energy
+            # Riding on energy makes the record spin down/up smoothly around
+            # pause/play, like a real platter.
+            spin_deg = (spin_deg + dt * SPIN_DPS * energy) % 360.0
 
             screen.blit(bg, (0, 0))
 
@@ -304,7 +330,7 @@ def main():
                 screen.blit(logo, (W - 24 - logo.get_width(), 16))
 
             # Cover wheel + track text
-            cur = draw_carousel(now, status, t, energy)
+            cur = draw_carousel(now, status, t, energy, spin_deg)
             text_y = 404
             if cur:
                 name_img = track_font.render(fit_text(track_font, cur["name"], W - 70), True, TEXT)
@@ -349,9 +375,8 @@ def main():
                 white = (245, 246, 250, alpha)
                 overlay = pygame.Surface((W, H), pygame.SRCALPHA)
                 cx, cy = CAR_CX, CAR_CY
-                pygame.draw.rect(overlay, (8, 9, 14, int(110 * (1 - ap))),
-                                 (cx - COVER // 2, cy - COVER // 2, COVER, COVER),
-                                 border_radius=20)
+                pygame.draw.circle(overlay, (8, 9, 14, int(110 * (1 - ap))),
+                                   (cx, cy), COVER // 2)
                 action = LAST_ACTION["name"]
                 if action in ("next", "prev"):
                     slide = 44 * ease_a * (1 if action == "next" else -1)
