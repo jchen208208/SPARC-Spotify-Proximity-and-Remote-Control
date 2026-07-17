@@ -566,18 +566,16 @@ def run_worker(stop_event, status):
         info = _track_info(item)
         try:
             q_items = sp.queue().get("queue", [])
-            nxt = _track_info(q_items[0]) if q_items else None
-            nxt2 = _track_info(q_items[1]) if len(q_items) > 1 else None
+            qinfos = [_track_info(q) for q in q_items[:4]]
         except Exception:
-            nxt = nxt2 = None
+            qinfos = []
         cur_id = item.get("id")
         if cur_id and cur_id != track_state["current_id"]:
             if track_state["current_id"] is not None:
                 track_state["prev"] = status.get("track_current")
             track_state["current_id"] = cur_id
         status["track_prev"] = track_state["prev"]
-        status["track_next"] = nxt
-        status["track_next2"] = nxt2
+        status["track_queue"] = qinfos
         status["track_current"] = info
 
     def update_spotify_status():
@@ -610,18 +608,24 @@ def run_worker(stop_event, status):
         # frame instead of waiting for tracks to change while the app runs.
         # One-shot: once the UI consumes it, its own history takes over.
         try:
-            items = sp.current_user_recently_played(limit=6).get("items", [])
+            items = sp.current_user_recently_played(limit=12).get("items", [])
         except Exception as e:
             print(f"  Recently played unavailable: {e}")
             return
-        hist, last_id = [], track_state["current_id"]
+        # Tracks skipped past earlier show up both here and in the upcoming
+        # queue; seeding those would put the same cover on both sides of the
+        # wheel, so anything queued is excluded from history.
+        skip = {track_state["current_id"]}
+        skip.update(tr["id"] for tr in status.get("track_queue") or []
+                    if tr and tr.get("id"))
+        hist, last_id = [], None
         for it in items:  # newest first
             tr = it.get("track")
-            if not tr or not tr.get("id") or tr["id"] == last_id:
-                continue  # skip the playing track and consecutive repeats
+            if not tr or not tr.get("id") or tr["id"] in skip or tr["id"] == last_id:
+                continue
             hist.append(_track_info(tr))
             last_id = tr["id"]
-            if len(hist) == 2:
+            if len(hist) == 4:
                 break
         status["track_history"] = hist[::-1]  # oldest first, like the UI's hist
 

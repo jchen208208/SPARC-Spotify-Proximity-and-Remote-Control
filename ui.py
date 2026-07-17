@@ -56,7 +56,7 @@ def main():
     LOGO_BLUES = [(26, 54, 93), (37, 84, 146), (66, 122, 193), (120, 170, 220)]
 
     bg = pygame.Surface((W, H))
-    top, bottom = (21, 23, 40), (6, 6, 11)
+    top, bottom = (44, 48, 74), (18, 19, 30)
     for y in range(H):
         f = y / H
         color = tuple(int(top[i] + (bottom[i] - top[i]) * f) for i in range(3))
@@ -89,11 +89,13 @@ def main():
     # tilt. A track change spins the whole wheel one slot, so covers visibly
     # rotate to the back on one side and around to the front on the other.
     CAR_CX, CAR_CY = W // 2, 262
-    COVER = 232                 # on-screen size of the focused cover
+    COVER = 200                 # on-screen size of the focused cover
     COVER_BASE = 300            # cached surface size (art is fetched at ~300px)
-    STEP = math.radians(64)     # wheel angle between adjacent slots
-    R_X = 326                   # wheel radius on screen, in px
-    DEPTH = 2.4                 # wheel depth relative to camera distance
+    STEP = math.radians(38)     # wheel angle between adjacent slots
+    R_X = 300                   # wheel radius on screen, in px
+    KX = 1.1                    # perspective fold for positions
+    KS = 3.2                    # size falloff with depth (steeper than KX so
+                                # the playing record stays clearly biggest)
     LIFT = 150                  # bird's-eye: how far the back of the wheel rises
     WHEEL_DUR = 0.65
     SPIN_DPS = 45.0             # playing record's spin speed (deg/s, ~8s per turn)
@@ -102,16 +104,16 @@ def main():
         th = s * STEP
         c = math.cos(th)
         back = (1.0 - c) / 2.0           # 0 at the front .. 1 at the back apex
-        persp = 1.0 / (1.0 + DEPTH * back)
-        x = CAR_CX + R_X * math.sin(th) * persp
+        x = CAR_CX + R_X * math.sin(th) / (1.0 + KX * back)
         y = CAR_CY - LIFT * back
-        alpha = 255 * ((c + 1.0) / 2.0) ** 0.8
-        return x, y, persp, alpha
+        scale = 1.0 / (1.0 + KS * back)
+        alpha = 255 * ((c + 1.0) / 2.0) ** 0.55
+        return x, y, scale, alpha
 
     # Every cover is a vinyl record: black disc with faint grooves, the album
     # art cropped to a circle inside, and a spindle dot dead center. Discs are
     # drawn at 2x and downscaled so the circle edges antialias.
-    ART_FRAC = 0.72  # art circle diameter as a fraction of the disc
+    ART_FRAC = 0.62  # art circle diameter as a fraction of the disc
     _D2 = COVER_BASE * 2
     _art_d2 = int(_D2 * ART_FRAC)
     _art_mask = pygame.Surface((_art_d2, _art_d2), pygame.SRCALPHA)
@@ -122,7 +124,7 @@ def main():
         d2 = pygame.Surface((_D2, _D2), pygame.SRCALPHA)
         c = _D2 // 2
         pygame.draw.circle(d2, (16, 16, 21), (c, c), c)                  # vinyl body
-        for rr in (0.80, 0.86, 0.92):                                    # grooves
+        for rr in (0.70, 0.78, 0.86, 0.93):                              # grooves
             pygame.draw.circle(d2, (52, 54, 64), (c, c), int(c * rr), width=2)
         pygame.draw.circle(d2, (104, 107, 120), (c, c), c - 1, width=2)  # rim light
         if art is not None:
@@ -141,6 +143,17 @@ def main():
 
     placeholder = make_disc(None)
     cover_cache = {}
+    scaled_cache = {}
+
+    def scaled_disc(base, size):
+        # Static frames redraw the same discs at the same sizes 60x a second;
+        # cache them. Animation frames bypass this (sizes change every frame).
+        key = (id(base), size)
+        if key not in scaled_cache:
+            if len(scaled_cache) > 96:
+                scaled_cache.clear()
+            scaled_cache[key] = pygame.transform.smoothscale(base, (size, size))
+        return scaled_cache[key]
 
     def cover_surface(track):
         art = track.get("art") if track else None
@@ -208,14 +221,13 @@ def main():
             if car["cur_id"] is not None and new_id is not None and car["anim"] is None:
                 if _spin_backward(new_id, now):
                     # Outgoing: the far queue cover rotates off past the apex.
-                    car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][2], "base": 3}
+                    car["anim"] = {"t0": now, "dir": -1, "out": car["wheel"][4], "base": 5}
                     if car["hist"] and car["hist"][-1].get("id") == new_id:
                         car["hist"].pop()
-                    car["pins"] = {s: (tr, now + 6.0)
-                                   for s, tr in ((1, car["wheel"][0]), (2, car["wheel"][1]))
-                                   if tr}
+                    car["pins"] = {s: (car["wheel"][s - 1], now + 6.0)
+                                   for s in (1, 2, 3, 4) if car["wheel"][s - 1]}
                 else:
-                    car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-2], "base": -3}
+                    car["anim"] = {"t0": now, "dir": 1, "out": car["wheel"][-4], "base": -5}
                     if car["wheel"][0]:
                         car["hist"] = (car["hist"] + [car["wheel"][0]])[-10:]
                     car["pins"] = {}
@@ -228,19 +240,22 @@ def main():
                 car["hist"] = list(status["track_history"])
             car["seeded"] = True
         hist = car["hist"]
-        wprev = status.get("track_prev")
-        nxt = status.get("track_next")
-        if wprev and nxt and wprev.get("id") == nxt.get("id"):
-            # After a back-skip the worker's inferred prev IS the next track;
-            # showing it on both sides of the wheel reads as a glitch.
-            wprev = None
-        car["wheel"] = {
-            -2: hist[-2] if len(hist) >= 2 else None,
-            -1: hist[-1] if hist else wprev,
-            0: cur,
-            1: nxt,
-            2: status.get("track_next2"),
-        }
+        q = status.get("track_queue") or []
+        right = [q[i] if i < len(q) else None for i in range(4)]
+        right_ids = {tr["id"] for tr in right + [cur] if tr and tr.get("id")}
+
+        def left_slot(k):
+            # A left cover that also sits on the right (tracks skipped past
+            # earlier reappear in the queue) would show the same art twice -
+            # prefer leaving the slot empty.
+            tr = hist[-k] if len(hist) >= k else (
+                status.get("track_prev") if k == 1 else None)
+            return tr if tr and tr.get("id") not in right_ids else None
+
+        car["wheel"] = {0: cur}
+        for k in range(1, 5):
+            car["wheel"][-k] = left_slot(k)
+            car["wheel"][k] = right[k - 1]
         for slot, (tr, expiry) in list(car["pins"].items()):
             live = car["wheel"][slot]
             if now > expiry or (live and live.get("id") == tr.get("id")):
@@ -268,6 +283,7 @@ def main():
             if track is None and abs(slot) > 1:
                 continue  # empty back slots stay empty; ±1 show placeholders
             items.append((track, slot + offset))
+        anim_active = car["anim"] is not None
         for track, s in sorted(items, key=lambda it: -abs(it[1])):
             x, y, scale, alpha = slot_params(s)
             if alpha <= 2:
@@ -277,16 +293,18 @@ def main():
             if track and track.get("id") == car["cur_id"]:
                 # Only the playing record spins (clockwise, like a turntable).
                 surf = pygame.transform.rotozoom(base, -spin_deg, size / COVER_BASE)
-            else:
+            elif anim_active:
                 surf = pygame.transform.smoothscale(base, (size, size))
+            else:
+                surf = scaled_disc(base, size)
             surf.set_alpha(int(alpha))
             screen.blit(surf, surf.get_rect(center=(int(x), int(y))))
         return cur
 
     status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
               "arduino": "Not connected", "arduino_state": "wait", "playing": False,
-              "track_current": None, "track_prev": None, "track_next": None,
-              "track_next2": None, "track_history": None}
+              "track_current": None, "track_prev": None, "track_queue": [],
+              "track_history": None}
     stop_event = threading.Event()
     worker = threading.Thread(target=run_worker, args=(stop_event, status), daemon=True)
     worker.start()
