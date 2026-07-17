@@ -16,6 +16,7 @@ def main():
     pygame.init()
     W, H = 520, 660
     logo = None
+    title = None
     try:
         # icon.png is the macOS-style app icon (white rounded plate, blue
         # symbol); logo.png stays the in-window header art.
@@ -23,14 +24,14 @@ def main():
     except Exception as e:
         print(f"  Icon error: {e}")
     try:
-        logo = pygame.image.load(os.path.join(ASSET_DIR, "logo.png"))
+        logo = pygame.image.load(os.path.join(ASSET_DIR, "logo_titleless.png"))
     except Exception as e:
         print(f"  Logo error: {e}")
     screen = pygame.display.set_mode((W, H))
     pygame.display.set_caption("SPARC Controller")
     if logo:
         logo = logo.convert_alpha()
-        logo = pygame.transform.smoothscale(logo, (int(44 * logo.get_width() / logo.get_height()), 44))
+        logo = pygame.transform.smoothscale(logo, (int(50 * logo.get_width() / logo.get_height()), 50))
 
     def load_font(filename, size):
         try:
@@ -258,7 +259,7 @@ def main():
     # but Spotify's queue endpoint can lag behind for a poll or two. Each pin
     # overrides its slot until the live data catches up (or it expires).
     car = {"cur_id": None, "anim": None, "hist": [], "pins": {}, "seeded": False,
-           "wheel": {s: None for s in range(-5, 6)}}
+            "wheel": {s: None for s in range(-5, 6)}}
 
     def _spin_backward(new_id, now):
         # Forward progression always lands on the previously-known "next"
@@ -296,13 +297,6 @@ def main():
                         car["hist"] = (car["hist"] + [car["wheel"][0]])[-12:]
                     car["pins"] = {}
             car["cur_id"] = new_id
-        if not car["seeded"] and status.get("track_history") is not None:
-            # One-shot seed from Spotify's recently-played history, so the
-            # prev slots show real covers at startup. Skipped if spins have
-            # already built a history of their own (the seed is stale then).
-            if not car["hist"]:
-                car["hist"] = list(status["track_history"])
-            car["seeded"] = True
         hist = car["hist"]
         q = status.get("track_queue") or []
         right = [q[i] if i < len(q) else None for i in range(5)]
@@ -311,9 +305,11 @@ def main():
         def left_slot(k):
             # A left cover that also sits on the right (tracks skipped past
             # earlier reappear in the queue) would show the same art twice -
-            # prefer leaving the slot empty.
-            tr = hist[-k] if len(hist) >= k else (
-                status.get("track_prev") if k == 1 else None)
+            # prefer leaving the slot empty. Same when there's no history yet
+            # for this slot (hist only grows from real spins this session) -
+            # no guessed fallback, since a wrong guess is worse than a blank
+            # seat.
+            tr = hist[-k] if len(hist) >= k else None
             return tr if tr and tr.get("id") not in right_ids else None
 
         car["wheel"] = {0: cur}
@@ -384,6 +380,7 @@ def main():
     eq_t = 0.0
     energy = 0.0
     spin_deg = 0.0
+    was_connected = False
     running = True
     try:
         while running:
@@ -394,6 +391,12 @@ def main():
             t = time.time() - t0
             now = time.time()
             connected = status["spotify_state"] == "ok" and status["arduino_state"] == "ok"
+            if connected and not was_connected:
+                car["hist"] = []
+                car["pins"] = {}
+                car["cur_id"] = None
+                car["anim"] = None
+            was_connected = connected
             playing = status["playing"]
             if LAST_ACTION["name"] in ("play", "pause") and now - LAST_ACTION["time"] < 2.0:
                 playing = LAST_ACTION["name"] == "play"
@@ -409,14 +412,19 @@ def main():
             # Header
             for i, blue in enumerate(LOGO_BLUES):
                 bh = 10 + 14 * (0.5 + 0.5 * math.sin(t * (1.6 + 0.5 * i) + i * 1.3))
-                pygame.draw.rect(screen, blue, (26 + i * 9, 56 - bh, 6, bh), border_radius=2)
-            title_img = wordmark_font.render("SPARC", True, TEXT)
-            screen.blit(title_img, (68, 14))
+                pygame.draw.rect(screen, blue, (26 + i * 9, 60 - bh, 6, bh), border_radius=2)
+            try:
+                title = pygame.image.load(os.path.join(ASSET_DIR, "title.png"))
+            except Exception as e:
+                print(f"  Title error: {e}")
             sub_img = sub_font.render("Spotify Proximity and Remote Control", True, DIM)
-            screen.blit(sub_img, (70, 48))
+            screen.blit(sub_img, (70, 52))
             if logo:
-                screen.blit(logo, (W - 24 - logo.get_width(), 16))
-
+                screen.blit(logo, (W - 24 - logo.get_width(), 20))
+            if title:
+                title = title.convert_alpha()
+                title = pygame.transform.smoothscale(title, (int(24 * title.get_width() / title.get_height()), 24))
+                screen.blit(title, (67, 28))
             # Cover wheel + track text
             cur = draw_carousel(now, status, t, energy, spin_deg)
             text_y = 404
