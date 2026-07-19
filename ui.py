@@ -460,23 +460,30 @@ def main():
                     car["fade"] = {"t0": now, "wheel": dict(car["wheel"])}
             car["cur_id"] = new_id
         if not car["seeded"] and status.get("track_history") is not None:
-            # The worker's one-shot seed: the tracks before this one in the
-            # playlist (or, failing that, recently played). Only ever applied
-            # at startup - after this the wheel's own history is the truth.
+            # The worker's one-shot recently-played seed, for contexts whose
+            # running order isn't readable. Only ever applied at startup -
+            # after this the wheel's own history is the truth.
             car["hist"] = list(status["track_history"])
             car["seeded"] = True
         hist = car["hist"]
+        prevs = status.get("track_prevs")
         q = status.get("track_queue") or []
         right = [q[i] if i < len(q) else None for i in range(5)]
         right_ids = {tr["id"] for tr in right + [cur] if tr and tr.get("id")}
 
         def left_slot(k):
-            # A left cover that also sits on the right (tracks skipped past
-            # earlier reappear in the queue) would show the same art twice -
-            # prefer leaving the slot empty. Same when there's no history yet
-            # for this slot (hist only grows from real spins this session) -
-            # no guessed fallback, since a wrong guess is worse than a blank
-            # seat.
+            # With the context's running order known, the k-th record back is
+            # simply the k-th track back in the playlist - no session memory,
+            # no dedupe (a track sitting on both sides of the wheel is the
+            # playlist's own truth).
+            if prevs is not None:
+                return prevs[-k] if len(prevs) >= k else None
+            # Fallback (radio, liked songs): session history. A left cover
+            # that also sits on the right (tracks skipped past earlier
+            # reappear in the queue) would show the same art twice - prefer
+            # leaving the slot empty. Same when there's no history yet for
+            # this slot - no guessed fallback, since a wrong guess is worse
+            # than a blank seat.
             tr = hist[-k] if len(hist) >= k else None
             return tr if tr and tr.get("id") not in right_ids else None
 
@@ -514,7 +521,7 @@ def main():
                 # fades in on top of it.
                 pe = ease(p)
                 for slot, track in fade["wheel"].items():
-                    if track is None and slot != 1:
+                    if track is None and (slot != 1 or prevs is not None):
                         continue  # matches the live-wheel filter just below
                     items.append((track, slot, 1.0 - pe))
 
@@ -523,17 +530,21 @@ def main():
         screen.blit(glow, glow.get_rect(center=(CAR_CX, CAR_CY)))
 
         for slot, track in car["wheel"].items():
-            if track is None and slot != 1:
-                continue  # empty seats stay empty; only +1 shows a placeholder
+            if track is None and (slot != 1 or prevs is not None):
+                # +1 gets a placeholder only while the upcoming side is a
+                # guess; with the playlist order known, an empty seat means
+                # there's truly nothing there (start/end of the playlist).
+                continue
             if fade:
                 amult = pe  # fading in uniformly, in place
             else:
                 amult = pe if (anim and slot == anim["in"]) else 1.0
             items.append((track, slot + offset, amult))
-        if status.get("shuffle") and car["wheel"][-1] is None:
-            # Shuffled: the previous track can't be read off the playlist
-            # order, so the seat holds a marked disc until a real skip fills
-            # it in.
+        if status.get("shuffle") and prevs is None and car["wheel"][-1] is None:
+            # Shuffled with no readable playlist order: the previous track
+            # is unknowable, so the seat holds a marked disc until a real
+            # skip fills it in. (With the order known, shuffle still shows
+            # real covers - the playlist as written.)
             items.append((SHUFFLE_SEAT, -1 + offset, pe if fade else 1.0))
         seats = ring_seats(RING_SEATS)
         drawlist = []
@@ -559,7 +570,8 @@ def main():
     status = status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
               "arduino": "Not connected", "arduino_state": "wait", "playing": False,
               "track_current": None, "track_prev": None, "track_queue": [],
-              "track_history": None, "context_uri": None, "shuffle": False}
+              "track_history": None, "track_prevs": None, "context_uri": None,
+              "shuffle": False}
     stop_event = threading.Event()
     worker = threading.Thread(target=run_worker, args=(stop_event, status), daemon=True)
     worker.start()

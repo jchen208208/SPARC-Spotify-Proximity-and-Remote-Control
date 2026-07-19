@@ -555,26 +555,35 @@ def run_worker(stop_event, status):
             "art": fetch_album_art(art_url),
         }
 
-    def _update_track_state(item):
+    def _update_track_state(item, context_uri):
         # Spotify's API has no "previous track" endpoint, so prev is inferred
         # by watching the current track ID change between polls. A skip that
         # happens between two polls (SPOTIFY_CHECK_INTERVAL apart) can be
         # missed if two changes land in the same window.
-        # All slow work (art downloads, the queue round-trip) happens before
-        # any status key is written, so the UI never sees a half-updated
-        # snapshot - e.g. the new current track next to the old queue.
+        # All slow work (art downloads, the order/queue round-trips) happens
+        # before any status key is written, so the UI never sees a
+        # half-updated snapshot - e.g. the new current track next to the old
+        # queue.
         info = _track_info(item)
-        try:
-            q_items = sp.queue().get("queue", [])
-            qinfos = [_track_info(q) for q in q_items[:5]]
-        except Exception:
-            qinfos = []
+        window = _playlist_window(context_uri, item.get("id"))
+        if window is not None:
+            # The context's running order is known: both sides of the wheel
+            # come straight from it, and the queue round-trip is skipped.
+            prevs, qinfos = window
+        else:
+            prevs = None
+            try:
+                q_items = sp.queue().get("queue", [])
+                qinfos = [_track_info(q) for q in q_items[:5]]
+            except Exception:
+                qinfos = []
         cur_id = item.get("id")
         if cur_id and cur_id != track_state["current_id"]:
             if track_state["current_id"] is not None:
                 track_state["prev"] = status.get("track_current")
             track_state["current_id"] = cur_id
         status["track_prev"] = track_state["prev"]
+        status["track_prevs"] = prevs
         status["track_queue"] = qinfos
         status["track_current"] = info
 
@@ -586,12 +595,16 @@ def run_worker(stop_event, status):
             if playback and playback.get("device"):
                 spotify_connected = True
                 playing = bool(playback.get("is_playing"))
-                item = playback.get("item")
-                if item:
-                    _update_track_state(item)
                 context = playback.get("context")
+                # Context lands before the track: on a playlist switch the
+                # UI hard-cuts when the URI changes, so the new track then
+                # reads as a clean cold start instead of animating across
+                # contexts.
                 status["context_uri"] = context.get("uri") if context else None
                 status["shuffle"] = bool(playback.get("shuffle_state"))
+                item = playback.get("item")
+                if item:
+                    _update_track_state(item, status["context_uri"])
             else:
                 devices = sp.devices().get("devices", [])
                 spotify_connected = bool(devices)
@@ -605,12 +618,19 @@ def run_worker(stop_event, status):
             status["spotify"] = "No active Spotify device"
             status["spotify_state"] = "err"
 
-    def _context_tracks(uri, cur_id):
-        # Only playlists and albums have a running order to read predecessors
-        # from; radio, liked songs and a bare track have nothing to page
-        # through. Stops at the page holding the current track, so the usual
-        # case costs one request even on a long playlist.
-        kind = uri.split(":")[1] if uri and uri.count(":") >= 2 else None
+    # One context's full running order, fetched once and reused every poll.
+    # The Web API never says where the playing track sits in its context -
+    # current_playback() gives the track and the context URI, nothing more -
+    # so the order is fetched wholesale and the position found by ID.
+    # "missing" remembers an ID that wasn't in the list (a one-off queued
+    # track, a playlist past the fetch cap) so it isn't refetched every poll.
+    ctx_order = {"uri": None, "items": None, "ids": [], "missing": None}
+
+    def _fetch_context_items(uri):
+        # Playlists and albums are the contexts with a readable running
+        # order; radio, liked songs and bare tracks aren't pageable, and
+        # very deep playlists get cut off rather than paged forever.
+        kind = uri.split(":")[1] if uri.count(":") >= 2 else None
         if kind == "album":
             alb = sp.album(uri)
             items = alb.get("tracks", {}).get("items", [])
@@ -618,17 +638,53 @@ def run_worker(stop_event, status):
                 tr["album"] = alb  # album tracks omit it, and art lives there
             return items
         if kind != "playlist":
-            return []
+            return None
         fields = "items(track(id,name,artists(name),album(images))),next"
         items, offset = [], 0
-        while offset < 500:  # very deep playlists: give up rather than page on
+        while offset < 500:
             page = sp.playlist_items(uri, fields=fields, limit=100, offset=offset)
-            got = [it.get("track") for it in page.get("items", []) if it.get("track")]
-            items.extend(got)
-            if not page.get("next") or any(tr.get("id") == cur_id for tr in got):
+            items.extend(it.get("track") for it in page.get("items", []) if it.get("track"))
+            if not page.get("next"):
                 break
             offset += 100
         return items
+
+    def _refresh_ctx_order(uri):
+        items = _fetch_context_items(uri)
+        ctx_order.update(uri=uri, items=items, missing=None,
+                         ids=[tr.get("id") for tr in (items or [])])
+
+    def _playlist_window(uri, cur_id):
+        # (prevs, nexts) around the current track in *playlist* order, or
+        # None when the order can't be known. Shuffle deliberately doesn't
+        # change this: the wheel shows the playlist as written, not the play
+        # order - a shuffled skip just recenters the window (the UI's "jump"
+        # crossfade) instead of spinning one seat over.
+        if not uri or not cur_id:
+            return None
+        try:
+            if ctx_order["uri"] != uri:
+                _refresh_ctx_order(uri)
+            elif (ctx_order["items"] is not None and cur_id != ctx_order["missing"]
+                    and cur_id not in ctx_order["ids"]):
+                # Not there? The playlist may have been edited since the
+                # fetch - look again, once per unknown ID.
+                _refresh_ctx_order(uri)
+        except Exception as e:
+            print(f"  Context order unavailable: {e}")
+            ctx_order["uri"] = None  # retry from scratch next poll
+            return None
+        if ctx_order["items"] is None:
+            return None
+        if cur_id not in ctx_order["ids"]:
+            ctx_order["missing"] = cur_id  # e.g. a queued one-off track
+            return None
+        # A track that appears twice in one playlist is ambiguous - the API
+        # doesn't say which copy is playing - so the first occurrence wins.
+        i = ctx_order["ids"].index(cur_id)
+        items = ctx_order["items"]
+        return ([_track_info(tr) for tr in items[max(0, i - 5):i]],
+                [_track_info(tr) for tr in items[i + 1:i + 6]])
 
     def _recently_played():
         try:
@@ -654,26 +710,15 @@ def run_worker(stop_event, status):
         return hist[::-1]  # oldest first, like the UI's hist
 
     def seed_history():
-        # The wheel's left seats want real covers from the first frame instead
-        # of waiting for tracks to change while the app runs. Best source is
-        # the playlist/album itself - the tracks sitting just before this one
-        # in the running order, so the ring reads in playlist order from the
-        # start. Shuffle scrambles that order and some contexts can't be paged
-        # at all; both fall back to what was actually played recently. One
-        # shot: once the UI consumes it, its own history takes over.
-        cur_id = track_state["current_id"]
-        hist = None  # None = couldn't place the track; [] = it's the first one
-        if cur_id and not status.get("shuffle"):
-            try:
-                items = _context_tracks(status.get("context_uri"), cur_id)
-            except Exception as e:
-                print(f"  Context tracks unavailable: {e}")
-                items = []
-            ids = [tr.get("id") for tr in items]
-            if cur_id in ids:
-                i = ids.index(cur_id)
-                hist = [_track_info(tr) for tr in items[max(0, i - 5):i]]
-        status["track_history"] = _recently_played() if hist is None else hist
+        # One-shot fallback seed for contexts whose running order can't be
+        # read (radio, liked songs): the recently-played endpoint at least
+        # knows what came before this session. When the order IS readable,
+        # track_prevs (kept live above) fills the left of the wheel
+        # continuously and no seed is wanted.
+        if status.get("track_prevs") is not None:
+            status["track_history"] = []
+        else:
+            status["track_history"] = _recently_played()
 
     update_spotify_status()
     seed_history()
