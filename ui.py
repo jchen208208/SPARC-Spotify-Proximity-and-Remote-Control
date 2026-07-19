@@ -379,7 +379,7 @@ def main():
                 # fades in on top of it.
                 pe = ease(p)
                 for slot, track in fade["wheel"].items():
-                    if track is None and abs(slot) > 1:
+                    if track is None and slot != 1:
                         continue  # matches the live-wheel filter just below
                     items.append((track, slot, 1.0 - pe))
 
@@ -388,8 +388,8 @@ def main():
         screen.blit(glow, glow.get_rect(center=(CAR_CX, CAR_CY)))
 
         for slot, track in car["wheel"].items():
-            if track is None and abs(slot) > 1:
-                continue  # empty back slots stay empty; ±1 show placeholders
+            if track is None and slot != 1:
+                continue  # empty seats stay empty; only +1 shows a placeholder
             if fade:
                 amult = pe  # fading in uniformly, in place
             else:
@@ -578,7 +578,7 @@ def main():
             # Status pills
             pill_w = (W - 48 - 12) // 2
             draw_pill(24, 560, pill_w, 46, "Spotify", status["spotify"], status["spotify_state"], t)
-            draw_pill(24 + pill_w + 12, 560, pill_w, 46, "Controller",
+            draw_pill(24 + pill_w + 12, 560, pill_w, 46, "SPARC",
                       status["arduino"], status["arduino_state"], t)
 
             hint_img = hint_font.render("Close this window to quit", True, (104, 106, 120))
