@@ -28,7 +28,7 @@ jobs:
       # No .env here on purpose: secrets aren't on the runner and must never be
       # baked into a public build. The exe reads a .env placed next to it.
       - name: Build exe
-        run: pyinstaller --onefile --windowed --name "SPARC Controller" --icon SPARC.ico --add-data "SPARC_assets;SPARC_assets" Main_nano.py
+        run: pyinstaller --onefile --windowed --name "SPARC Controller" --icon SPARC.ico --add-data "SPARC_assets;SPARC_assets" Main.py
 
       - name: Stage asset (drop the space for clean URLs)
         run: Copy-Item "dist/SPARC Controller.exe" "SPARC-Controller.exe"
