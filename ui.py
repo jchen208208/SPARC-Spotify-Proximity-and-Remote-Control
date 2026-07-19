@@ -103,109 +103,16 @@ def main():
         surf.blit(sheen, sheen.get_rect(center=(W * S // 2, H * S // 2)),
                   special_flags=pygame.BLEND_RGB_ADD)
 
-        # Phonograph cabinet + neck. The horn's bell lives on its own layer
-        # (build_horn, below) so it can stand *between* the carousel's back
-        # and front rows; only the parts records never overlap - the neck
-        # sliver under the front record and the wooden body - are baked in
-        # here. Drawn at 2x so the curves antialias on the way down.
-        #
-        # The box is in oblique perspective, like a crate icon: the front
-        # face is the near plane and every depth edge runs parallel
-        # up-and-to-the-right (with a small convergence on the far edges),
-        # exposing the top face and the right side face. The whole box sits
-        # shifted a little left of the window centre so the middle of its
-        # TOP face - where the horn's neck sockets in - lands exactly under
-        # the bell at x=260.
-        fx0, fy0, fw, fh = 105 * S, 394 * S, 280 * S, 64 * S    # front face
-        dpx, dpy = 30 * S, 20 * S                               # depth vector
-        cvg = 4 * S                                             # far-edge convergence
-        ftl = (fx0, fy0)                                        # front corners
-        ftr = (fx0 + fw, fy0)
-        fbr = (fx0 + fw, fy0 + fh)
-        btl = (fx0 + dpx + cvg, fy0 - dpy)                      # back corners
-        btr = (fx0 + fw + dpx - cvg, fy0 - dpy)
-        bbr = (fx0 + fw + dpx - cvg, fy0 + fh - dpy + cvg)
-        pygame.draw.rect(surf, (13, 12, 18),                    # ground shadow
-                         (fx0 - 3 * S, fy0 + 6 * S, fw + dpx + 6 * S, fh + 4 * S),
-                         border_radius=12 * S)
-        pygame.draw.polygon(surf, (80, 59, 44), [ftl, ftr, btr, btl])  # top face
-        pygame.draw.polygon(surf, (20, 14, 10), [ftr, btr, bbr, fbr])  # right side face
-        # top-face grain, running between the receding side edges
-        pygame.draw.line(surf, (62, 45, 34), (129 * S, 380 * S), (403 * S, 380 * S), S)
-        pygame.draw.line(surf, (62, 45, 34), (119 * S, 386 * S), (396 * S, 386 * S), S)
-        pygame.draw.line(surf, (62, 45, 34), (112 * S, 390 * S), (390 * S, 390 * S), S)
-        pygame.draw.line(surf, (36, 25, 19), btl, btr, S)       # top back edge
-        pygame.draw.line(surf, (54, 39, 29), ftr, btr, S)       # top-right depth edge
-        pygame.draw.line(surf, (40, 29, 22), btr, bbr, S)       # back-right arris
-        pygame.draw.rect(surf, (14, 11, 9),                     # back-right foot
-                         (398 * S, 445 * S, 10 * S, 9 * S))
-        pygame.draw.line(surf, (12, 9, 7), fbr, bbr, S)         # side bottom edge
-        pygame.draw.ellipse(surf, (16, 12, 9),                  # socket hole
-                            (252 * S, 382 * S, 16 * S, 5 * S))
-        pygame.draw.polygon(surf, (96, 76, 48),                 # neck sliver
+        # Phonograph neck sliver - the one piece of the machine left in the
+        # baked background, because it must sit BEHIND the front record.
+        # The bell lives on its own between-the-rows layer (build_horn) and
+        # the cabinet on its own foreground layer (build_cabinet), where
+        # the album-tinted glow can't recolour it.
+        pygame.draw.polygon(surf, (96, 76, 48),
                             [(253 * S, 344 * S), (267 * S, 344 * S),
                              (264 * S, 385 * S), (256 * S, 385 * S)])
-        pygame.draw.line(surf, (150, 122, 78),                  # neck glint
+        pygame.draw.line(surf, (150, 122, 78),
                          (257 * S, 348 * S), (258 * S, 382 * S), S)
-        pygame.draw.ellipse(surf, (152, 124, 78),               # socket collar
-                            (249 * S, 380 * S, 22 * S, 8 * S), width=S)
-        # Front face: espresso wood lit from above - vertical gradient,
-        # grain, and shaded outer edges. Square corners on purpose: the
-        # side faces fold away along crisp arrises.
-        wood = pygame.Surface((fw, fh), pygame.SRCALPHA)
-        for i in range(fh):
-            f = i / fh
-            pygame.draw.line(wood, (int(46 - 19 * f), int(33 - 14 * f),
-                                    int(25 - 10 * f), 255), (0, i), (fw, i))
-        for gy in (0.25, 0.48, 0.72, 0.90):                     # wood grain
-            yy = fh * gy
-            pts = [(6 * S + i * (fw - 12 * S) / 40.0,
-                    yy + math.sin(i * 0.7 + gy * 11.0) * 1.3 * S) for i in range(41)]
-            pygame.draw.lines(wood, (33, 23, 18), False, pts, S)
-        shade = pygame.Surface((fw, fh), pygame.SRCALPHA)       # edge falloff
-        for i in range(18 * S):
-            a = int(70 * (1.0 - i / (18.0 * S)) ** 1.5)
-            pygame.draw.line(shade, (0, 0, 0, a), (i, 0), (i, fh))
-            pygame.draw.line(shade, (0, 0, 0, a), (fw - 1 - i, 0), (fw - 1 - i, fh))
-        wood.blit(shade, (0, 0))
-        surf.blit(wood, (fx0, fy0))
-        pygame.draw.line(surf, (84, 61, 45), (fx0, fy0),
-                         (fx0 + fw, fy0), S)                    # lit top arris
-        pygame.draw.line(surf, (20, 14, 11), (fx0, fy0),
-                         (fx0, fy0 + fh), S)                    # front arrises
-        pygame.draw.line(surf, (20, 14, 11), (fx0 + fw, fy0),
-                         (fx0 + fw, fy0 + fh), S)
-        pygame.draw.rect(surf, (30, 21, 16),                    # base plinth
-                         (fx0, fy0 + fh - 6 * S, fw, 6 * S))
-        pygame.draw.line(surf, (56, 40, 30), (fx0 + 4 * S, fy0 + fh - 6 * S),
-                         (fx0 + fw - 4 * S, fy0 + fh - 6 * S), S)
-        pygame.draw.rect(surf, (24, 17, 14), (121 * S, 402 * S, 248 * S, 50 * S),
-                         border_radius=6 * S)                   # title panel
-        # frame drawn 2px wide at a moderate brown: a 1px bright hairline on
-        # near-black reads as white no matter its hue - width is what lets
-        # the eye see the colour
-        pygame.draw.rect(surf, (98, 68, 44), (121 * S, 402 * S, 248 * S, 50 * S),
-                         width=2 * S, border_radius=6 * S)      # brown frame
-        pygame.draw.rect(surf, (12, 9, 7), (125 * S, 406 * S, 240 * S, 42 * S),
-                         width=S, border_radius=5 * S)          # inner groove
-        for sx, sy in ((113, 407), (377, 407), (113, 447), (377, 447)):
-            pygame.draw.circle(surf, (118, 92, 58), (sx * S, sy * S), 2 * S)
-            pygame.draw.line(surf, (60, 46, 30), ((sx - 1) * S, sy * S),
-                             ((sx + 1) * S, sy * S), S)         # screw slots
-        # winding crank, poking out of the right side face
-        pygame.draw.rect(surf, (150, 122, 78), (396 * S, 424 * S, 20 * S, 4 * S))
-        pygame.draw.rect(surf, (104, 82, 52), (396 * S, 426 * S, 20 * S, 2 * S))
-        pygame.draw.circle(surf, (150, 122, 78), (416 * S, 426 * S), 3 * S)
-        pygame.draw.rect(surf, (128, 102, 64), (414 * S, 426 * S, 4 * S, 20 * S))
-        pygame.draw.rect(surf, (74, 52, 36), (411 * S, 444 * S, 10 * S, 13 * S),
-                         border_radius=4 * S)                   # grip
-        pygame.draw.line(surf, (108, 78, 54), (413 * S, 446 * S),
-                         (413 * S, 454 * S), S)
-        for fx in (113, 351):                                   # tapered feet
-            pygame.draw.polygon(surf, (16, 12, 10),
-                                [(fx * S, fy0 + fh), ((fx + 26) * S, fy0 + fh),
-                                 ((fx + 22) * S, fy0 + fh + 8 * S),
-                                 ((fx + 4) * S, fy0 + fh + 8 * S)])
 
         surf = pygame.transform.smoothscale(surf, (W, H))
 
@@ -350,6 +257,114 @@ def main():
     horn_pos = (W // 2 - 85, 78)  # bell centre lands at (260, 128)
     HORN_LAYER = 0.65  # discs at least this big draw over the horn (the
                        # front row); everything smaller sits behind it
+
+    def build_cabinet():
+        # The phonograph's wooden box, on its own foreground layer blitted
+        # AFTER the carousel. Baked into the background it sat under the
+        # album-tinted glow, which recoloured it every frame - logo blue
+        # before the first track, then whatever the current cover's colour
+        # is. Out here it keeps its own light-brown wood no matter what
+        # plays. Records never reach below y=360, so nothing needs to draw
+        # on top of it except the track text.
+        #
+        # Oblique perspective, like a crate icon: front face is the near
+        # plane, depth edges run parallel up-and-right (small convergence
+        # on the far edges), exposing the top and right side faces. The box
+        # sits left of the window centre so the middle of its top face -
+        # where the horn's neck sockets in - lands exactly under the bell
+        # at x=260.
+        S = 2
+        s = pygame.Surface((W * S, H * S), pygame.SRCALPHA)
+        fx0, fy0, fw, fh = 105 * S, 394 * S, 280 * S, 64 * S    # front face
+        dpx, dpy = 30 * S, 20 * S                               # depth vector
+        cvg = 4 * S                                             # far-edge convergence
+        ftl = (fx0, fy0)                                        # front corners
+        ftr = (fx0 + fw, fy0)
+        fbr = (fx0 + fw, fy0 + fh)
+        btl = (fx0 + dpx + cvg, fy0 - dpy)                      # back corners
+        btr = (fx0 + fw + dpx - cvg, fy0 - dpy)
+        bbr = (fx0 + fw + dpx - cvg, fy0 + fh - dpy + cvg)
+        pygame.draw.rect(s, (10, 9, 14, 160),                   # ground shadow
+                         (fx0 - 3 * S, fy0 + 6 * S, fw + dpx + 6 * S, fh + 4 * S),
+                         border_radius=12 * S)
+        pygame.draw.polygon(s, (150, 112, 78), [ftl, ftr, btr, btl])  # top face
+        pygame.draw.polygon(s, (66, 47, 33), [ftr, btr, bbr, fbr])    # right side face
+        # top-face grain, running between the receding side edges
+        pygame.draw.line(s, (124, 92, 63), (129 * S, 380 * S), (403 * S, 380 * S), S)
+        pygame.draw.line(s, (124, 92, 63), (119 * S, 386 * S), (396 * S, 386 * S), S)
+        pygame.draw.line(s, (124, 92, 63), (112 * S, 390 * S), (390 * S, 390 * S), S)
+        pygame.draw.line(s, (100, 74, 52), btl, btr, S)         # top back edge
+        pygame.draw.line(s, (128, 95, 66), ftr, btr, S)         # top-right depth edge
+        pygame.draw.line(s, (104, 77, 54), btr, bbr, S)         # back-right arris
+        pygame.draw.rect(s, (48, 35, 26),                       # back-right foot
+                         (398 * S, 445 * S, 10 * S, 9 * S))
+        pygame.draw.line(s, (52, 38, 28), fbr, bbr, S)          # side bottom edge
+        pygame.draw.ellipse(s, (16, 12, 9),                     # socket hole
+                            (252 * S, 382 * S, 16 * S, 5 * S))
+        pygame.draw.polygon(s, (96, 76, 48),                    # neck stub, meeting
+                            [(255 * S, 372 * S), (265 * S, 372 * S),  # the baked sliver
+                             (264 * S, 385 * S), (256 * S, 385 * S)])
+        pygame.draw.ellipse(s, (152, 124, 78),                  # socket collar
+                            (249 * S, 380 * S, 22 * S, 8 * S), width=S)
+        # front face: light oak, lit from above, shaded toward the edges
+        wood = pygame.Surface((fw, fh), pygame.SRCALPHA)
+        for i in range(fh):
+            f = i / fh
+            pygame.draw.line(wood, (int(132 - 34 * f), int(98 - 26 * f),
+                                    int(68 - 18 * f), 255), (0, i), (fw, i))
+        for gy in (0.25, 0.48, 0.72, 0.90):                     # wood grain
+            yy = fh * gy
+            pts = [(6 * S + i * (fw - 12 * S) / 40.0,
+                    yy + math.sin(i * 0.7 + gy * 11.0) * 1.3 * S) for i in range(41)]
+            pygame.draw.lines(wood, (106, 78, 54), False, pts, S)
+        shade = pygame.Surface((fw, fh), pygame.SRCALPHA)       # edge falloff
+        for i in range(18 * S):
+            a = int(70 * (1.0 - i / (18.0 * S)) ** 1.5)
+            pygame.draw.line(shade, (0, 0, 0, a), (i, 0), (i, fh))
+            pygame.draw.line(shade, (0, 0, 0, a), (fw - 1 - i, 0), (fw - 1 - i, fh))
+        wood.blit(shade, (0, 0))
+        s.blit(wood, (fx0, fy0))
+        pygame.draw.line(s, (168, 128, 90), (fx0, fy0),
+                         (fx0 + fw, fy0), S)                    # lit top arris
+        pygame.draw.line(s, (70, 50, 36), (fx0, fy0),
+                         (fx0, fy0 + fh), S)                    # front arrises
+        pygame.draw.line(s, (70, 50, 36), (fx0 + fw, fy0),
+                         (fx0 + fw, fy0 + fh), S)
+        pygame.draw.rect(s, (96, 70, 49),                       # base plinth
+                         (fx0, fy0 + fh - 6 * S, fw, 6 * S))
+        pygame.draw.line(s, (128, 95, 66), (fx0 + 4 * S, fy0 + fh - 6 * S),
+                         (fx0 + fw - 4 * S, fy0 + fh - 6 * S), S)
+        pygame.draw.rect(s, (24, 17, 14), (121 * S, 402 * S, 248 * S, 50 * S),
+                         border_radius=6 * S)                   # title panel
+        # 2px frame: a 1px bright hairline on dark reads as white whatever
+        # its hue - width is what lets the eye see brown
+        pygame.draw.rect(s, (134, 98, 64), (121 * S, 402 * S, 248 * S, 50 * S),
+                         width=2 * S, border_radius=6 * S)      # brown frame
+        pygame.draw.rect(s, (12, 9, 7), (125 * S, 406 * S, 240 * S, 42 * S),
+                         width=S, border_radius=5 * S)          # inner groove
+        for sx, sy in ((113, 407), (377, 407), (113, 447), (377, 447)):
+            pygame.draw.circle(s, (96, 72, 46), (sx * S, sy * S), 2 * S)
+            pygame.draw.line(s, (52, 40, 26), ((sx - 1) * S, sy * S),
+                             ((sx + 1) * S, sy * S), S)         # screw slots
+        # winding crank, poking out of the right side face
+        pygame.draw.rect(s, (150, 122, 78), (396 * S, 424 * S, 20 * S, 4 * S))
+        pygame.draw.rect(s, (104, 82, 52), (396 * S, 426 * S, 20 * S, 2 * S))
+        pygame.draw.circle(s, (150, 122, 78), (416 * S, 426 * S), 3 * S)
+        pygame.draw.rect(s, (128, 102, 64), (414 * S, 426 * S, 4 * S, 20 * S))
+        pygame.draw.rect(s, (98, 68, 46), (411 * S, 444 * S, 10 * S, 13 * S),
+                         border_radius=4 * S)                   # grip
+        pygame.draw.line(s, (140, 104, 72), (413 * S, 446 * S),
+                         (413 * S, 454 * S), S)
+        for fx in (113, 351):                                   # tapered feet
+            pygame.draw.polygon(s, (56, 40, 29),
+                                [(fx * S, fy0 + fh), ((fx + 26) * S, fy0 + fh),
+                                 ((fx + 22) * S, fy0 + fh + 8 * S),
+                                 ((fx + 4) * S, fy0 + fh + 8 * S)])
+        s = pygame.transform.smoothscale(s, (W, H))
+        rect = pygame.Rect(94, 366, 336, 108)  # tight crop: one small blit per frame
+        return s.subsurface(rect).copy(), rect.topleft
+
+    cabinet, cabinet_pos = build_cabinet()
 
     # ---------- Sparks ----------
     # The other half of the name: embers lifting off the record and drifting
@@ -892,6 +907,7 @@ def main():
             # window - the box sits left of centre so the horn lands mid
             # top-face), so it's capped and centred to the panel.
             cur = draw_carousel(now, status, t, energy, spin_deg)
+            screen.blit(cabinet, cabinet_pos)  # over the glow, under the text
             box_cx = 245  # front-face centre of the cabinet
             text_y = 404
             if cur:
