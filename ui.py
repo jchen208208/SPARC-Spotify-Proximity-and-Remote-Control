@@ -210,7 +210,8 @@ def main():
         # overlaps a solid neck (no gap to flash through if the record is
         # mid-swap). Pixel-art after the phonograph references: gold bell,
         # leaning to the left - rings shift left-and-down as they shrink,
-        # so the mouth sits off-centre in the rim.
+        # so the mouth sits off-centre in the rim - with the whole head
+        # swung ~30 deg to the right about the mouth.
         HW, HH = 85, 155                # art px; 170x310 on screen
         s = pygame.Surface((HW, HH), pygame.SRCALPHA)
         cx, cy = 43, 23                 # bell rim centre -> screen (261, 124)
@@ -224,7 +225,7 @@ def main():
         # Neck: brass tube easing from under the bell's mouth side back to
         # the socket at x=260, tapering as it drops; solid all the way, the
         # front record just overlaps it.
-        spine = ((39, 38, 6), (41, 74, 5), (42, 112, 4), (42, HH, 3))
+        spine = ((39, 38, 7), (41, 74, 6), (42, 112, 5), (42, HH, 4))
         left = [(x - w, y) for x, y, w in spine]
         right = [(x + w, y) for x, y, w in spine]
         pygame.draw.polygon(s, (168, 132, 74), left + right[::-1])
@@ -232,31 +233,41 @@ def main():
         pygame.draw.lines(s, OUT, False, right, 1)
         pygame.draw.lines(s, (214, 176, 106), False,
                           [(x - w + 2, y) for x, y, w in spine], 1)
-        # Bell: outlined rim, gold deepening toward the throat.
-        pygame.draw.ellipse(s, OUT, (cx - brx - 1, cy - bry - 1,
+        # Bell: outlined rim, gold deepening toward the throat. Drawn on
+        # its own layer, then swung about the mouth so the head bends
+        # right while the neck stays put and notes keep spawning from the
+        # same spot.
+        b = pygame.Surface((HW, HH), pygame.SRCALPHA)
+        pygame.draw.ellipse(b, OUT, (cx - brx - 1, cy - bry - 1,
                                      brx * 2 + 3, bry * 2 + 3))
         for f, col in ((1.0, (212, 174, 104)), (0.86, (188, 150, 86)),
                        (0.68, (156, 120, 66)), (0.50, (122, 92, 50)),
                        (0.34, (92, 68, 38))):
             rw, rh = int(brx * f), int(bry * f)
             rx, ry = ring(f)
-            pygame.draw.ellipse(s, col, (int(rx) - rw, int(ry) - rh, rw * 2, rh * 2))
+            pygame.draw.ellipse(b, col, (int(rx) - rw, int(ry) - rh, rw * 2, rh * 2))
         for k in range(8):              # petal seams
             a = math.tau * (k + 0.5) / 8.0
             x1, y1 = ring(0.46)
             x2, y2 = ring(0.96)
-            pygame.draw.line(s, (162, 128, 70),
+            pygame.draw.line(b, (162, 128, 70),
                              (x1 + 0.46 * brx * math.cos(a), y1 + 0.46 * bry * math.sin(a)),
                              (x2 + 0.96 * brx * math.cos(a), y2 + 0.96 * bry * math.sin(a)), 1)
-        mrx, mry = ring(0.24)
-        mw, mh = int(brx * 0.24), int(bry * 0.24)
-        pygame.draw.ellipse(s, (26, 19, 12),        # the mouth
+        mrx, mry = ring(0.28)
+        mw, mh = int(brx * 0.28), int(bry * 0.28)
+        pygame.draw.ellipse(b, (12, 8, 5),          # the mouth
                             (int(mrx) - mw, int(mry) - mh, mw * 2, mh * 2))
-        pygame.draw.ellipse(s, (70, 52, 30),        # throat wall catch-light
+        pygame.draw.ellipse(b, (70, 52, 30),        # throat wall catch-light
                             (int(mrx) - mw, int(mry) - mh, mw * 2, mh * 2), width=1)
-        pygame.draw.arc(s, (240, 208, 140),         # glint on the upper rim
+        pygame.draw.arc(b, (240, 208, 140),         # glint on the upper rim
                         (cx - brx + 1, cy - bry + 1, brx * 2 - 2, bry * 2 - 2),
                         math.radians(40), math.radians(140), 2)
+        BEND = -30                                  # degrees; negative = right
+        rot = pygame.transform.rotate(b, BEND)
+        ca, sa = math.cos(math.radians(BEND)), math.sin(math.radians(BEND))
+        vx, vy = mrx - HW / 2, mry - HH / 2         # surface centre -> mouth
+        s.blit(rot, rot.get_rect(center=(mrx - (vx * ca + vy * sa),
+                                         mry - (vy * ca - vx * sa))))
         return pixel_up(s)
 
     horn = build_horn()
@@ -324,10 +335,10 @@ def main():
         # socket + neck stub, meeting the horn layer's neck at x=260
         pygame.draw.ellipse(s, (188, 148, 84), (54, 11, 12, 5), 1)   # collar
         pygame.draw.ellipse(s, (12, 9, 7), (55, 12, 10, 4))          # hole
-        pygame.draw.rect(s, (168, 132, 74), (57, 5, 6, 8))           # stub
-        pygame.draw.line(s, OUT, (56, 5), (56, 12), 1)
-        pygame.draw.line(s, OUT, (63, 5), (63, 12), 1)
-        pygame.draw.line(s, (214, 176, 106), (58, 6), (58, 12), 1)
+        pygame.draw.rect(s, (168, 132, 74), (56, 5, 8, 8))           # stub
+        pygame.draw.line(s, OUT, (55, 5), (55, 12), 1)
+        pygame.draw.line(s, OUT, (64, 5), (64, 12), 1)
+        pygame.draw.line(s, (214, 176, 106), (57, 6), (57, 12), 1)
         # title panel: dark glass in a wood frame; the track text lands here
         pygame.draw.rect(s, (150, 112, 64), (16, 20, 84, 26))
         pygame.draw.rect(s, OUT, (16, 20, 84, 26), 1)
