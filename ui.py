@@ -187,7 +187,22 @@ def main():
     pygame.draw.circle(_art_mask, (255, 255, 255, 255),
                        (_art_d2 // 2, _art_d2 // 2), _art_d2 // 2)
 
-    def make_disc(art):
+    def draw_shuffle_glyph(surf, c):
+        # Two crossing arrows, drawn at 2x with the rest of the disc.
+        g = int(_D2 * 0.115)
+        gy = int(g * 0.45)
+        lw = max(4, int(_D2 * 0.016))
+        col = (150, 154, 170)
+        for sy in (-1, 1):
+            pygame.draw.lines(surf, col, False,
+                              [(c - g, c + gy * sy), (c + int(g * 0.62), c - gy * sy),
+                               (c + int(g * 0.84), c - gy * sy)], lw)
+            pygame.draw.polygon(surf, col,
+                                [(c + int(g * 0.78), c - gy * sy - lw * 2),
+                                 (c + int(g * 0.78), c - gy * sy + lw * 2),
+                                 (c + g, c - gy * sy)])
+
+    def make_disc(art, shuffle=False):
         d2 = pygame.Surface((_D2, _D2), pygame.SRCALPHA)
         c = _D2 // 2
         pygame.draw.circle(d2, (16, 16, 21), (c, c), c)                  # vinyl body
@@ -198,6 +213,9 @@ def main():
             a = pygame.transform.smoothscale(art, (_art_d2, _art_d2)).convert_alpha()
             a.blit(_art_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
             d2.blit(a, (c - _art_d2 // 2, c - _art_d2 // 2))
+        elif shuffle:
+            pygame.draw.circle(d2, CARD, (c, c), _art_d2 // 2)
+            draw_shuffle_glyph(d2, c)
         else:
             pygame.draw.circle(d2, CARD, (c, c), _art_d2 // 2)
             for i, blue in enumerate(LOGO_BLUES):
@@ -209,6 +227,7 @@ def main():
         return pygame.transform.smoothscale(d2, (COVER_BASE, COVER_BASE))
 
     placeholder = make_disc(None)
+    shuffle_disc = make_disc(None, shuffle=True)
     cover_cache = {}
     scaled_cache = {}
 
@@ -223,6 +242,8 @@ def main():
         return scaled_cache[key]
 
     def cover_surface(track):
+        if track and track.get("shuffle"):
+            return shuffle_disc
         art = track.get("art") if track else None
         if art is None:
             return placeholder
@@ -275,6 +296,11 @@ def main():
     # ones (already the live, correct wheel) fade in over them.
     car = {"cur_id": None, "anim": None, "hist": [], "pins": {}, "seeded": False,
             "wheel": {s: None for s in range(-5, 6)}, "fade": None}
+
+    # Stands in for the track before this one when shuffle makes it
+    # unknowable. Never enters car["wheel"] - it's drawn straight into the
+    # frame - so nothing that reasons about the wheel has to know about it.
+    SHUFFLE_SEAT = {"id": None, "shuffle": True}
 
     def _classify_transition(new_id, now):
         # Forward and backward are the two moves we can predict: forward
@@ -330,6 +356,12 @@ def main():
                     car["pins"] = {}
                     car["fade"] = {"t0": now, "wheel": dict(car["wheel"])}
             car["cur_id"] = new_id
+        if not car["seeded"] and status.get("track_history") is not None:
+            # The worker's one-shot seed: the tracks before this one in the
+            # playlist (or, failing that, recently played). Only ever applied
+            # at startup - after this the wheel's own history is the truth.
+            car["hist"] = list(status["track_history"])
+            car["seeded"] = True
         hist = car["hist"]
         q = status.get("track_queue") or []
         right = [q[i] if i < len(q) else None for i in range(5)]
@@ -395,6 +427,11 @@ def main():
             else:
                 amult = pe if (anim and slot == anim["in"]) else 1.0
             items.append((track, slot + offset, amult))
+        if status.get("shuffle") and car["wheel"][-1] is None:
+            # Shuffled: the previous track can't be read off the playlist
+            # order, so the seat holds a marked disc until a real skip fills
+            # it in.
+            items.append((SHUFFLE_SEAT, -1 + offset, pe if fade else 1.0))
         seats = ring_seats(RING_SEATS)
         drawlist = []
         for track, s, amult in items:
@@ -405,7 +442,7 @@ def main():
         for scale, x, y, alpha, track in sorted(drawlist, key=lambda d: d[0]):
             size = max(2, int(COVER * scale))
             base = cover_surface(track)
-            if track and track.get("id") == car["cur_id"]:
+            if track and track.get("id") and track.get("id") == car["cur_id"]:
                 # Only the playing record spins (clockwise, like a turntable).
                 surf = pygame.transform.rotozoom(base, -spin_deg, size / COVER_BASE)
             elif anim_active:
@@ -419,7 +456,7 @@ def main():
     status = status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
               "arduino": "Not connected", "arduino_state": "wait", "playing": False,
               "track_current": None, "track_prev": None, "track_queue": [],
-              "track_history": None, "context_uri": None}
+              "track_history": None, "context_uri": None, "shuffle": False}
     stop_event = threading.Event()
     worker = threading.Thread(target=run_worker, args=(stop_event, status), daemon=True)
     worker.start()

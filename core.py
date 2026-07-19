@@ -591,6 +591,7 @@ def run_worker(stop_event, status):
                     _update_track_state(item)
                 context = playback.get("context")
                 status["context_uri"] = context.get("uri") if context else None
+                status["shuffle"] = bool(playback.get("shuffle_state"))
             else:
                 devices = sp.devices().get("devices", [])
                 spotify_connected = bool(devices)
@@ -604,16 +605,37 @@ def run_worker(stop_event, status):
             status["spotify"] = "No active Spotify device"
             status["spotify_state"] = "err"
 
-    def seed_history():
-        # Spotify's recently-played endpoint knows what came before this
-        # session, so the wheel's prev slots get real covers from the first
-        # frame instead of waiting for tracks to change while the app runs.
-        # One-shot: once the UI consumes it, its own history takes over.
+    def _context_tracks(uri, cur_id):
+        # Only playlists and albums have a running order to read predecessors
+        # from; radio, liked songs and a bare track have nothing to page
+        # through. Stops at the page holding the current track, so the usual
+        # case costs one request even on a long playlist.
+        kind = uri.split(":")[1] if uri and uri.count(":") >= 2 else None
+        if kind == "album":
+            alb = sp.album(uri)
+            items = alb.get("tracks", {}).get("items", [])
+            for tr in items:
+                tr["album"] = alb  # album tracks omit it, and art lives there
+            return items
+        if kind != "playlist":
+            return []
+        fields = "items(track(id,name,artists(name),album(images))),next"
+        items, offset = [], 0
+        while offset < 500:  # very deep playlists: give up rather than page on
+            page = sp.playlist_items(uri, fields=fields, limit=100, offset=offset)
+            got = [it.get("track") for it in page.get("items", []) if it.get("track")]
+            items.extend(got)
+            if not page.get("next") or any(tr.get("id") == cur_id for tr in got):
+                break
+            offset += 100
+        return items
+
+    def _recently_played():
         try:
             items = sp.current_user_recently_played(limit=12).get("items", [])
         except Exception as e:
             print(f"  Recently played unavailable: {e}")
-            return
+            return []
         # Tracks skipped past earlier show up both here and in the upcoming
         # queue; seeding those would put the same cover on both sides of the
         # wheel, so anything queued is excluded from history.
@@ -629,7 +651,29 @@ def run_worker(stop_event, status):
             last_id = tr["id"]
             if len(hist) == 5:
                 break
-        status["track_history"] = hist[::-1]  # oldest first, like the UI's hist
+        return hist[::-1]  # oldest first, like the UI's hist
+
+    def seed_history():
+        # The wheel's left seats want real covers from the first frame instead
+        # of waiting for tracks to change while the app runs. Best source is
+        # the playlist/album itself - the tracks sitting just before this one
+        # in the running order, so the ring reads in playlist order from the
+        # start. Shuffle scrambles that order and some contexts can't be paged
+        # at all; both fall back to what was actually played recently. One
+        # shot: once the UI consumes it, its own history takes over.
+        cur_id = track_state["current_id"]
+        hist = None  # None = couldn't place the track; [] = it's the first one
+        if cur_id and not status.get("shuffle"):
+            try:
+                items = _context_tracks(status.get("context_uri"), cur_id)
+            except Exception as e:
+                print(f"  Context tracks unavailable: {e}")
+                items = []
+            ids = [tr.get("id") for tr in items]
+            if cur_id in ids:
+                i = ids.index(cur_id)
+                hist = [_track_info(tr) for tr in items[max(0, i - 5):i]]
+        status["track_history"] = _recently_played() if hist is None else hist
 
     update_spotify_status()
     seed_history()
