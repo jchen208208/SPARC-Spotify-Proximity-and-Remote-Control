@@ -4,6 +4,7 @@
 
 import math
 import os
+import random
 import threading
 import time
 
@@ -56,12 +57,115 @@ def main():
     STATE_COLORS = {"ok": GREEN, "wait": RED, "err": RED}
     LOGO_BLUES = [(26, 54, 93), (37, 84, 146), (66, 122, 193), (120, 170, 220)]
 
-    bg = pygame.Surface((W, H))
-    top, bottom = (44, 48, 74), (18, 19, 30)
-    for y in range(H):
-        f = y / H
-        color = tuple(int(top[i] + (bottom[i] - top[i]) * f) for i in range(3))
-        pygame.draw.line(bg, color, (0, y), (W, y))
+    # Centre of the platter. Lives up here because the background's grooves
+    # are drawn around it too - the window is meant to read as one big record
+    # with the carousel sitting on its spindle.
+    CAR_CX, CAR_CY = W // 2, 262
+
+    # ---------- Background ----------
+    # The vinyl itself, seen up close: a deep three-stop gradient, concentric
+    # grooves around the spindle, and a diagonal sheen where light catches the
+    # surface. Built once at 2x and downscaled so the groove rings come out
+    # smooth instead of stair-stepped.
+    def build_background():
+        S = 2
+        surf = pygame.Surface((W * S, H * S))
+        top, mid, bottom = (46, 50, 84), (30, 32, 54), (13, 14, 23)
+        for y in range(H * S):
+            f = y / (H * S)
+            a, b, g = (top, mid, f / 0.55) if f < 0.55 else (mid, bottom, (f - 0.55) / 0.45)
+            color = tuple(int(a[i] + (b[i] - a[i]) * g) for i in range(3))
+            pygame.draw.line(surf, color, (0, y), (W * S, y))
+
+        # Grooves: evenly spaced like a real record, fading out as they run
+        # off toward the corners. Alternating brightness gives the surface a
+        # bit of tooth without turning into a moiré pattern.
+        cx, cy = CAR_CX * S, CAR_CY * S
+        corner = math.hypot(max(cx, W * S - cx), max(cy, H * S - cy))
+        r, i = int(30 * S), 0
+        while r < corner:
+            fade = 1.0 - (r / corner) ** 1.7
+            k = (7.0 if i % 2 else 11.0) * fade
+            pygame.draw.circle(surf, (int(70 * k / 11), int(74 * k / 11), int(96 * k / 11)),
+                               (cx, cy), r, width=S)
+            r += int(10 * S)
+            i += 1
+
+        # Sheen: a soft diagonal band, added rather than blended so it only
+        # ever lifts the surface it crosses.
+        sheen = pygame.Surface((W * S, H * S))
+        band = int(W * S * 0.6)
+        for x in range(band):
+            w = math.sin(math.pi * x / band) ** 2
+            pygame.draw.line(sheen, (int(15 * w), int(19 * w), int(28 * w)),
+                             (x, 0), (x, H * S))
+        sheen = pygame.transform.rotate(sheen, -28)
+        surf.blit(sheen, sheen.get_rect(center=(W * S // 2, H * S // 2)),
+                  special_flags=pygame.BLEND_RGB_ADD)
+        surf = pygame.transform.smoothscale(surf, (W, H))
+
+        # Vignette, built small and scaled up - a per-pixel loop at full size
+        # would cost seconds. Pulls the corners down so the platter reads as
+        # the lit part of the frame.
+        vig = pygame.Surface((64, 64))
+        for y in range(64):
+            for x in range(64):
+                d = math.hypot((x - 31.5) / 31.5, (y - 31.5) / 31.5) / 1.414
+                k = int(255 * (1.0 - 0.5 * min(1.0, d) ** 2.0))
+                vig.set_at((x, y), (k, k, k))
+        surf.blit(pygame.transform.smoothscale(vig, (W, H)), (0, 0),
+                  special_flags=pygame.BLEND_RGB_MULT)
+        return surf
+
+    bg = build_background()
+
+    # ---------- Sparks ----------
+    # The other half of the name: embers lifting off the record and drifting
+    # up the frame. They idle when paused and pick up with the music, so the
+    # window breathes along with the platter.
+    # Weighted warm - embers off the record, not a starfield. The one cool
+    # tint keeps them tied to the logo blues.
+    SPARK_TINTS = [(255, 176, 84), (255, 202, 118), (255, 228, 176), (140, 182, 230)]
+
+    def make_spark(radius, color):
+        d = radius * 2
+        s = pygame.Surface((d, d), pygame.SRCALPHA)
+        for y in range(d):
+            for x in range(d):
+                dist = math.hypot(x - radius + 0.5, y - radius + 0.5) / radius
+                a = int(255 * max(0.0, 1.0 - dist) ** 2.4)
+                if a:
+                    s.set_at((x, y), (*color, a))
+        return s
+
+    spark_sprites = [make_spark(r, c) for c in SPARK_TINTS for r in (4, 7, 10)]
+    sparks = []
+    for _ in range(46):
+        sparks.append({
+            "x": random.uniform(0, W),
+            "y": random.uniform(0, H),
+            "sprite": random.choice(spark_sprites),
+            "rise": random.uniform(7.0, 26.0),      # px/sec at full energy
+            "sway": random.uniform(6.0, 20.0),
+            "rate": random.uniform(0.4, 1.3),       # sway + twinkle speed
+            "phase": random.uniform(0.0, math.tau),
+            "peak": random.uniform(0.30, 1.0),      # brightest this one gets
+        })
+
+    def draw_sparks(t, dt, energy):
+        # 0.28 keeps a slow drift alive while paused so the frame never goes
+        # completely static.
+        lift = 0.28 + 0.72 * energy
+        for sp in sparks:
+            sp["y"] -= sp["rise"] * lift * dt
+            if sp["y"] < -12:
+                sp["y"] = H + 12
+                sp["x"] = random.uniform(0, W)
+            x = sp["x"] + sp["sway"] * math.sin(t * sp["rate"] + sp["phase"])
+            twinkle = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(t * sp["rate"] * 2.3 + sp["phase"]))
+            img = sp["sprite"]
+            img.set_alpha(int(150 * sp["peak"] * twinkle * lift))
+            screen.blit(img, img.get_rect(center=(int(x), int(sp["y"]))))
 
     def fit_text(font, text, max_width):
         if font.size(text)[0] <= max_width:
@@ -97,7 +201,6 @@ def main():
     # that assumption, so it's handled as its own case: no spin, just a
     # crossfade from the old cover to whatever's actually there now. See
     # _classify_transition.
-    CAR_CX, CAR_CY = W // 2, 262
     COVER = 195                 # on-screen size of the focused cover
     COVER_BASE = 300            # cached surface size (art is fetched at ~300px)
     RING_SEATS = 11             # one seat per wheel slot; the ring never
@@ -511,6 +614,7 @@ def main():
             spin_deg = (spin_deg + dt * SPIN_DPS * energy) % 360.0
 
             screen.blit(bg, (0, 0))
+            draw_sparks(t, dt, energy)
 
             # Header
             for i, blue in enumerate(LOGO_BLUES):
