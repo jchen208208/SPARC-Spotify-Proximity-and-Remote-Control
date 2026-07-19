@@ -278,79 +278,67 @@ def main():
     def build_cabinet():
         # The phonograph's wooden box, on its own foreground layer blitted
         # AFTER the carousel - baked into the background it sat under the
-        # album-tinted glow, which recoloured it every frame. Pixel-art
-        # after the phonograph references: a compact oblique crate with
-        # outlined faces, dressed with corner posts, plank grain, screws
-        # and side seams so the wood reads as boards rather than a flat
-        # slab. Plinth on blocky feet, the dark title panel the track text
-        # sits on, and the crank on the right side face. The horn's neck
-        # sockets into the top face at x=260. Drawn in art pixels and
-        # nearest-scaled up.
+        # album-tinted glow, which recoloured it every frame. Redrawn
+        # after the phonograph1 reference: a front-facing cabinet - dark
+        # moulded cornice, tan face between dark pilasters, stepped plinth
+        # on blocky feet - with a big gold title plate the track text
+        # lands on, and a vinyl record lying flat on the lid, seen
+        # edge-on, tonearm resting across it. The horn's neck drops into
+        # the record's label at x=260 like a spindle. Drawn in art pixels
+        # and nearest-scaled up.
         AW, AH = 128, 56                        # art px; 256x112 on screen
         s = pygame.Surface((AW, AH), pygame.SRCALPHA)
         OUT = (30, 20, 15)
-        fx0, fy0, fw, fh = 10, 17, 96, 31       # front face
-        dx, dy = 12, 11                         # oblique depth, up-and-right
         pygame.draw.rect(s, (10, 9, 14, 130),   # ground shadow
-                         (fx0 - 6, fy0 + fh - 2, fw + dx + 12, 8))
-        pygame.draw.rect(s, (114, 78, 52),      # plinth, box stands on it
-                         (fx0 - 3, fy0 + fh, fw + 6, 4))
-        pygame.draw.polygon(s, (70, 48, 32),    # plinth right side
-                            [(fx0 + fw + 3, fy0 + fh),
-                             (fx0 + fw + dx + 3, fy0 + fh - dy),
-                             (fx0 + fw + dx + 3, fy0 + fh - dy + 4),
-                             (fx0 + fw + 3, fy0 + fh + 4)])
-        pygame.draw.rect(s, OUT, (fx0 - 3, fy0 + fh, fw + 6, 4), 1)
-        pygame.draw.line(s, (168, 128, 90),     # lit plinth arris
-                         (fx0 - 2, fy0 + fh + 1), (fx0 + fw + 2, fy0 + fh + 1), 1)
-        for fxx in (fx0 + 2, fx0 + fw - 16):    # feet
-            pygame.draw.rect(s, (70, 48, 32), (fxx, fy0 + fh + 4, 14, 3))
-            pygame.draw.rect(s, OUT, (fxx, fy0 + fh + 4, 14, 3), 1)
-        top = [(fx0, fy0), (fx0 + fw, fy0),
-               (fx0 + fw + dx, fy0 - dy), (fx0 + dx, fy0 - dy)]
-        side = [(fx0 + fw, fy0), (fx0 + fw + dx, fy0 - dy),
-                (fx0 + fw + dx, fy0 + fh - dy), (fx0 + fw, fy0 + fh)]
-        pygame.draw.polygon(s, (168, 126, 84), top)
-        pygame.draw.polygon(s, (88, 62, 42), side)
-        pygame.draw.rect(s, (146, 106, 70), (fx0, fy0, fw, fh))
-        pygame.draw.polygon(s, OUT, top, 1)
-        pygame.draw.polygon(s, OUT, side, 1)
-        pygame.draw.rect(s, OUT, (fx0, fy0, fw, fh), 1)
-        for gy in (fy0 - 3, fy0 - 6, fy0 - 9):  # top-face grain
-            off = dx * (fy0 - gy) // dy
-            pygame.draw.line(s, (146, 106, 70), (fx0 + off + 2, gy),
-                             (fx0 + fw + off - 2, gy), 1)
-        for px0 in (fx0, fx0 + fw - 4):         # corner posts
-            pygame.draw.rect(s, (130, 94, 62), (px0, fy0, 4, fh))
-            pygame.draw.rect(s, OUT, (px0, fy0, 4, fh), 1)
-        for i, gx in enumerate(range(fx0 + 8, fx0 + fw - 10, 13)):
-            pygame.draw.line(s, (162, 120, 80), # grain dashes, top strip
-                             (gx, fy0 + 2 + (i % 2)), (gx + 4, fy0 + 2 + (i % 2)), 1)
-            pygame.draw.line(s, (118, 84, 56),  # and bottom strip
-                             (gx + 3, fy0 + fh - 2), (gx + 7, fy0 + fh - 2), 1)
-        for k in (4, 8):                        # side-face plank seams
-            sx = fx0 + fw + k
-            pygame.draw.line(s, (74, 52, 36), (sx, fy0 - k * dy // dx + 2),
-                             (sx, fy0 + fh - k * dy // dx - 2), 1)
-        # socket + neck stub, meeting the horn layer's neck at x=260
-        pygame.draw.ellipse(s, (188, 148, 84), (54, 11, 12, 5), 1)   # collar
-        pygame.draw.ellipse(s, (12, 9, 7), (55, 12, 10, 4))          # hole
-        pygame.draw.rect(s, (168, 132, 74), (56, 5, 8, 8))           # stub
-        pygame.draw.line(s, OUT, (55, 5), (55, 12), 1)
-        pygame.draw.line(s, OUT, (64, 5), (64, 12), 1)
-        pygame.draw.line(s, (214, 176, 106), (57, 6), (57, 12), 1)
-        # title panel: dark glass in a wood frame; the track text lands here
-        pygame.draw.rect(s, (150, 112, 64), (16, 20, 84, 26))
-        pygame.draw.rect(s, OUT, (16, 20, 84, 26), 1)
-        pygame.draw.rect(s, (18, 13, 11), (18, 21, 80, 24))
-        for sx, sy in ((12, 19), (12, 45), (104, 19), (104, 45)):
-            s.set_at((sx, sy), (188, 148, 84))  # post screws
-        # winding crank, poking out of the right side face
-        pygame.draw.rect(s, (168, 132, 74), (118, 30, 7, 2))
-        pygame.draw.rect(s, (90, 66, 40), (118, 32, 7, 1))
-        pygame.draw.rect(s, (146, 112, 64), (123, 33, 2, 8))
-        pygame.draw.rect(s, (98, 68, 46), (121, 41, 6, 6))
-        pygame.draw.rect(s, OUT, (121, 41, 6, 6), 1)
+                         (4, 51, 120, 5))
+        for fxx in (18, 88):                    # feet
+            pygame.draw.rect(s, (88, 48, 34), (fxx, 52, 14, 4))
+            pygame.draw.rect(s, OUT, (fxx, 52, 14, 4), 1)
+        pygame.draw.rect(s, (96, 58, 40), (8, 49, 112, 4))    # lower plinth
+        pygame.draw.rect(s, OUT, (8, 49, 112, 4), 1)
+        pygame.draw.rect(s, (114, 74, 50), (12, 46, 104, 4))  # upper plinth
+        pygame.draw.rect(s, OUT, (12, 46, 104, 4), 1)
+        pygame.draw.line(s, (158, 104, 70), (13, 47), (114, 47), 1)
+        pygame.draw.rect(s, (182, 142, 100), (14, 16, 92, 30))  # body face
+        pygame.draw.rect(s, OUT, (14, 16, 92, 30), 1)
+        for i, gx in enumerate(range(24, 94, 13)):  # grain dashes
+            pygame.draw.line(s, (206, 166, 120),
+                             (gx, 17 + (i % 2)), (gx + 4, 17 + (i % 2)), 1)
+        for px0 in (14, 101):                   # pilasters
+            pygame.draw.rect(s, (112, 72, 48), (px0, 16, 5, 30))
+            pygame.draw.rect(s, OUT, (px0, 16, 5, 30), 1)
+            pygame.draw.line(s, (150, 100, 66), (px0 + 1, 17), (px0 + 1, 44), 1)
+            for cy2 in (16, 42):                # capitals
+                pygame.draw.rect(s, (96, 60, 42), (px0 - 1, cy2, 7, 4))
+                pygame.draw.rect(s, OUT, (px0 - 1, cy2, 7, 4), 1)
+        pygame.draw.rect(s, (104, 56, 40), (10, 12, 100, 5))  # cornice
+        pygame.draw.rect(s, OUT, (10, 12, 100, 5), 1)
+        pygame.draw.line(s, (150, 92, 66), (11, 13), (108, 13), 1)
+        # the record, flat on the lid and seen edge-on; grooves, gold
+        # label, and the spindle hole the horn's neck drops into
+        pygame.draw.ellipse(s, OUT, (23, 1, 74, 12))             # outline
+        pygame.draw.ellipse(s, (14, 12, 16), (24, 4, 72, 9))     # disc side
+        pygame.draw.ellipse(s, (30, 28, 34), (24, 2, 72, 9))     # disc top
+        pygame.draw.ellipse(s, (54, 52, 60), (34, 4, 52, 5), 1)  # grooves
+        pygame.draw.ellipse(s, (44, 42, 48), (42, 5, 36, 3), 1)
+        pygame.draw.ellipse(s, (200, 160, 92), (50, 3, 20, 7))   # label
+        pygame.draw.ellipse(s, (40, 28, 16), (50, 3, 20, 7), 1)
+        pygame.draw.ellipse(s, (12, 9, 7), (53, 4, 14, 5))       # spindle hole
+        pygame.draw.line(s, (40, 38, 44), (68, 6), (89, 4), 1)   # tonearm
+        pygame.draw.rect(s, (58, 56, 64), (88, 2, 3, 3))         # arm knob
+        pygame.draw.rect(s, OUT, (88, 2, 3, 3), 1)
+        # neck stub, meeting the horn layer's neck at x=260
+        pygame.draw.rect(s, (168, 132, 74), (56, 0, 8, 8))
+        pygame.draw.line(s, OUT, (55, 0), (55, 7), 1)
+        pygame.draw.line(s, OUT, (64, 0), (64, 7), 1)
+        pygame.draw.line(s, (214, 176, 106), (57, 0), (57, 7), 1)
+        # the gold plate, sized to the track text: 180-340 x 396-450 on
+        # screen; title + artist render over it, centred at box_cx=260
+        pygame.draw.rect(s, (204, 160, 90), (20, 19, 80, 27))
+        pygame.draw.rect(s, (222, 184, 112), (21, 20, 34, 25))
+        pygame.draw.rect(s, OUT, (20, 19, 80, 27), 1)
+        pygame.draw.line(s, (240, 208, 140), (21, 20), (98, 20), 1)
+        pygame.draw.line(s, (150, 112, 60), (21, 44), (98, 44), 1)
         return pixel_up(s), (140, 358)
 
     cabinet, cabinet_pos = build_cabinet()
@@ -975,22 +963,24 @@ def main():
                 title = pygame.transform.smoothscale(title, (int(24 * title.get_width() / title.get_height()), 24))
                 screen.blit(title, (67, 28))
             # Cover wheel + track text. The text sits on the phonograph
-            # body's title panel (176-336 x 400-448 on the cabinet layer),
-            # centred on the box's front face rather than the window, so
-            # it's capped and centred to the panel.
+            # body's gold plate (180-340 x 396-450 on the cabinet layer),
+            # centred on the plate rather than the window, so it's capped
+            # and centred to it. Dark ink - white on gold won't read.
             cur = draw_carousel(now, status, t, energy, spin_deg)
             screen.blit(cabinet, cabinet_pos)  # over the glow, under the text
             draw_horn_notes(now, dt, status["playing"])
-            box_cx = 256  # front-face centre of the cabinet
+            box_cx = 260  # gold plate centre on the cabinet's front face
             text_y = 402
+            PLATE_INK = (52, 34, 18)
+            PLATE_DIM = (104, 72, 38)
             if cur:
-                name_img = track_font.render(fit_text(track_font, cur["name"], 150), True, TEXT)
-                artist_img = artist_font.render(fit_text(artist_font, cur["artist"], 150), True, DIM)
+                name_img = track_font.render(fit_text(track_font, cur["name"], 150), True, PLATE_INK)
+                artist_img = artist_font.render(fit_text(artist_font, cur["artist"], 150), True, PLATE_DIM)
                 screen.blit(name_img, (box_cx - name_img.get_width() // 2, text_y))
                 screen.blit(artist_img, (box_cx - artist_img.get_width() // 2,
                                          text_y + name_img.get_height() + 2))
             else:
-                empty_img = artist_font.render("Nothing playing", True, DIM)
+                empty_img = artist_font.render("Nothing playing", True, PLATE_DIM)
                 screen.blit(empty_img, (box_cx - empty_img.get_width() // 2, text_y + 12))
 
             # EQ strip / connection state
