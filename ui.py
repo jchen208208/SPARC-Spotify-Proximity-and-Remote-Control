@@ -102,7 +102,112 @@ def main():
         sheen = pygame.transform.rotate(sheen, -28)
         surf.blit(sheen, sheen.get_rect(center=(W * S // 2, H * S // 2)),
                   special_flags=pygame.BLEND_RGB_ADD)
+
+        # Phonograph: the machine the carousel plays on. Horn bell peeking
+        # over the back of the ring, a sliver of neck visible under the
+        # front record, and the wooden body under the platter - the track
+        # title is drawn onto its front panel every frame. Drawn at 2x with
+        # everything else so the curves antialias on the way down.
+        pygame.draw.polygon(surf, (112, 90, 56),                # neck sliver
+                            [(253 * S, 344 * S), (267 * S, 344 * S),
+                             (263 * S, 386 * S), (257 * S, 386 * S)])
+        # Bell rings shift down as they shrink: the mouth sits low in the
+        # rim, so the horn reads as tilted up toward the viewer - the same
+        # shallow bird's-eye angle the carousel is drawn at.
+        bcx, bcy, brx, bry = 260 * S, 128 * S, 68 * S, 42 * S
+        tilt = 9 * S
+
+        def bell_y(f):
+            return bcy + (1.0 - f) * tilt
+
+        for f, col in ((1.0, (114, 91, 57)), (0.80, (97, 78, 48)),
+                       (0.60, (79, 63, 40)), (0.40, (54, 43, 29))):
+            rw, rh = int(brx * f), int(bry * f)
+            pygame.draw.ellipse(surf, col, (bcx - rw, int(bell_y(f)) - rh, rw * 2, rh * 2))
+        rw, rh = int(brx * 0.24), int(bry * 0.24)
+        pygame.draw.ellipse(surf, (24, 19, 15),                 # the mouth
+                            (bcx - rw, int(bell_y(0.24)) - rh, rw * 2, rh * 2))
+        for k in range(8):                                      # flare seams
+            a = math.tau * (k + 0.5) / 8.0
+            pygame.draw.line(surf, (128, 104, 66),
+                             (bcx + 0.48 * brx * math.cos(a), bell_y(0.48) + 0.48 * bry * math.sin(a)),
+                             (bcx + 0.95 * brx * math.cos(a), bell_y(0.95) + 0.95 * bry * math.sin(a)), S)
+        pygame.draw.ellipse(surf, (158, 131, 85),               # rim light
+                            (bcx - brx, bcy - bry, brx * 2, bry * 2), width=S)
+        bx, by, bw, bh2 = 90 * S, 384 * S, 340 * S, 84 * S      # wooden body
+        pygame.draw.rect(surf, (58, 42, 33), (bx, by, bw, bh2), border_radius=10 * S)
+        for gy in (0.28, 0.52, 0.78):                           # wood grain
+            yy = by + bh2 * gy
+            pts = [(bx + 8 * S + i * (bw - 16 * S) / 40.0,
+                    yy + math.sin(i * 0.7 + gy * 9.0) * 1.2 * S) for i in range(41)]
+            pygame.draw.lines(surf, (47, 33, 26), False, pts, S)
+        pygame.draw.rect(surf, (30, 22, 17), (bx, by, bw, bh2), width=2 * S,
+                         border_radius=10 * S)
+        pygame.draw.line(surf, (96, 72, 54), (bx + 10 * S, by + 3 * S),
+                         (bx + bw - 10 * S, by + 3 * S), S)     # bevel catch-light
+        pygame.draw.rect(surf, (36, 26, 21), (110 * S, 394 * S, 300 * S, 66 * S),
+                         border_radius=8 * S)                   # title panel
+        pygame.draw.rect(surf, (88, 66, 48), (110 * S, 394 * S, 300 * S, 66 * S),
+                         width=S, border_radius=8 * S)
+        pygame.draw.rect(surf, (120, 96, 60), (bx + bw - 2 * S, 414 * S, 16 * S, 5 * S))
+        pygame.draw.rect(surf, (120, 96, 60), (bx + bw + 10 * S, 414 * S, 5 * S, 26 * S))
+        pygame.draw.circle(surf, (150, 122, 78), (bx + bw + 12 * S, 442 * S), 4 * S)  # crank
+        for fx in (108, 384):                                   # feet
+            pygame.draw.rect(surf, (24, 18, 14), (fx * S, by + bh2, 28 * S, 7 * S),
+                             border_radius=3 * S)
+
         surf = pygame.transform.smoothscale(surf, (W, H))
+
+        # Music notes drift about the leftover space - different sizes and
+        # tilts, kept off the platter and the phonograph so they read as
+        # background, not clutter. Fixed seed: same sky every launch.
+        rng = random.Random(11)
+
+        def note_sprite(size):
+            d = size * 2  # drawn big, halved by rotozoom for antialiasing
+            s = pygame.Surface((d, d), pygame.SRCALPHA)
+            col = (150, 158, 190)
+            hw, hh, sw = int(d * 0.16), int(d * 0.11), max(2, d // 16)
+            if rng.random() < 0.5:  # single quaver
+                hx, hy, top = int(d * 0.34), int(d * 0.78), int(d * 0.22)
+                pygame.draw.ellipse(s, col, (hx - hw, hy - hh, hw * 2, hh * 2))
+                sx = hx + hw - sw
+                pygame.draw.rect(s, col, (sx, top, sw, hy - top))
+                pygame.draw.polygon(s, col, [                   # flag
+                    (sx + sw, top), (sx + sw + int(d * 0.20), top + int(d * 0.16)),
+                    (sx + sw + int(d * 0.12), top + int(d * 0.36)),
+                    (sx + sw + int(d * 0.05), top + int(d * 0.32)),
+                    (sx + sw + int(d * 0.11), top + int(d * 0.16))])
+            else:  # beamed pair
+                x1, y1, t1 = int(d * 0.26), int(d * 0.80), int(d * 0.30)
+                x2, y2, t2 = int(d * 0.66), int(d * 0.74), int(d * 0.24)
+                for hx, hy in ((x1, y1), (x2, y2)):
+                    pygame.draw.ellipse(s, col, (hx - hw, hy - hh, hw * 2, hh * 2))
+                pygame.draw.rect(s, col, (x1 + hw - sw, t1, sw, y1 - t1))
+                pygame.draw.rect(s, col, (x2 + hw - sw, t2, sw, y2 - t2))
+                pygame.draw.polygon(s, col, [(x1 + hw - sw, t1), (x2 + hw, t2),
+                                             (x2 + hw, t2 + int(d * 0.10)),
+                                             (x1 + hw - sw, t1 + int(d * 0.10))])
+            s = pygame.transform.rotozoom(s, rng.uniform(-40, 40), 0.5)
+            s.set_alpha(rng.randint(40, 85))
+            return s
+
+        def in_the_open(x, y):
+            if ((x - CAR_CX) / 215.0) ** 2 + ((y - CAR_CY) / 155.0) ** 2 < 1.0:
+                return False                          # platter
+            if 160 < x < 360 and y < 180:
+                return False                          # horn bell
+            if 70 < x < 460 and 370 < y < 484:
+                return False                          # phonograph body
+            return True
+
+        for _ in range(15):
+            for _try in range(40):
+                x, y = rng.uniform(24, W - 24), rng.uniform(30, H - 40)
+                if in_the_open(x, y):
+                    break
+            img = note_sprite(rng.randint(26, 60))
+            surf.blit(img, img.get_rect(center=(int(x), int(y))))
 
         # Vignette, built small and scaled up - a per-pixel loop at full size
         # would cost seconds. Pulls the corners down so the platter reads as
@@ -644,12 +749,14 @@ def main():
                 title = title.convert_alpha()
                 title = pygame.transform.smoothscale(title, (int(24 * title.get_width() / title.get_height()), 24))
                 screen.blit(title, (67, 28))
-            # Cover wheel + track text
+            # Cover wheel + track text. The text sits on the phonograph
+            # body's title panel (baked into the background at 110-410 x
+            # 394-460), so it's capped to the panel's width, not the window's.
             cur = draw_carousel(now, status, t, energy, spin_deg)
-            text_y = 404
+            text_y = 400
             if cur:
-                name_img = track_font.render(fit_text(track_font, cur["name"], W - 70), True, TEXT)
-                artist_img = artist_font.render(fit_text(artist_font, cur["artist"], W - 90), True, DIM)
+                name_img = track_font.render(fit_text(track_font, cur["name"], 284), True, TEXT)
+                artist_img = artist_font.render(fit_text(artist_font, cur["artist"], 284), True, DIM)
                 screen.blit(name_img, (W // 2 - name_img.get_width() // 2, text_y))
                 screen.blit(artist_img, (W // 2 - artist_img.get_width() // 2,
                                          text_y + name_img.get_height() + 2))
