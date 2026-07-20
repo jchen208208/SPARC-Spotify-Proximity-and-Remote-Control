@@ -252,27 +252,30 @@ def main():
         # and needle clear the focused record drawn over the horn.
         ecx, ecy, SEAM = 31, 130, math.radians(146)
         bend = [math.pi / 2 + (SEAM - math.pi / 2) * i / 10 for i in range(11)]
-        outer = [(ecx + 10 * math.cos(a), ecy + 10 * math.sin(a)) for a in bend]
-        inner = [(ecx + 4 * math.cos(a), ecy + 4 * math.sin(a)) for a in bend]
-        pygame.draw.polygon(s, (150, 150, 158), outer + inner[::-1])
-        pygame.draw.lines(s, OUT, False, outer, 1)
-        pygame.draw.lines(s, OUT, False, inner, 1)
-        pygame.draw.lines(s, (200, 202, 210), False,
-                          [(ecx + 8 * math.cos(a), ecy + 8 * math.sin(a))
-                           for a in bend], 1)
-        pygame.draw.rect(s, (150, 150, 158), (31, 134, 4, 6))  # run to ball
-        pygame.draw.line(s, OUT, (31, 134), (34, 134), 1)
-        pygame.draw.line(s, OUT, (31, 139), (34, 139), 1)
-        pygame.draw.line(s, (200, 202, 210), (31, 135), (33, 135), 1)
+
+        def ring_at(r):
+            return [(ecx + r * math.cos(a), ecy + r * math.sin(a)) for a in bend]
+
+        pygame.draw.polygon(s, OUT, ring_at(11) + ring_at(3)[::-1])
+        pygame.draw.lines(s, OUT, True, ring_at(10.4) + ring_at(3.6)[::-1], 3)
+        pygame.draw.polygon(s, (150, 150, 158), ring_at(10) + ring_at(4)[::-1])
+        pygame.draw.lines(s, (200, 202, 210), False, ring_at(8), 1)
+        pygame.draw.rect(s, OUT, (31, 133, 5, 9))              # run to ball,
+        pygame.draw.rect(s, (150, 150, 158), (31, 134, 4, 7))  # flush with the
+        pygame.draw.line(s, (200, 202, 210), (31, 135), (33, 135), 1)  # bend
         # socket band clamped over the tilted gold-to-grey seam: wider
         # than the tube across it, short along its axis
         su = (math.cos(SEAM), math.sin(SEAM))
         sv = (-su[1], su[0])
         smx, smy = ecx + 7 * su[0], ecy + 7 * su[1]
-        band = [(smx + a * su[0] + b * sv[0], smy + a * su[1] + b * sv[1])
-                for a, b in ((4.5, 2.5), (4.5, -2.5), (-4.5, -2.5), (-4.5, 2.5))]
-        pygame.draw.polygon(s, (150, 150, 158), band)
-        pygame.draw.polygon(s, OUT, band, 1)
+
+        def band(across, along):
+            return [(smx + p * su[0] + q * sv[0], smy + p * su[1] + q * sv[1])
+                    for p, q in ((across, along), (across, -along),
+                                 (-across, -along), (-across, along))]
+
+        pygame.draw.polygon(s, OUT, band(5.5, 3.5))
+        pygame.draw.polygon(s, (150, 150, 158), band(4.5, 2.5))
         # Support bracket (phonograph1, mirrored): reads as a "[" - the
         # top arm clamps the golden stem just above the grey elbow, the
         # post drops down clear of the box's left flank, and the cabinet
@@ -340,7 +343,11 @@ def main():
         return pixel_up(s)
 
     horn = build_horn()
-    horn_pos = (W // 2 - 125, 78)  # bell rim centre lands at (261, 124)
+    # x is even so the horn's 2px art grid lines up with the cabinet's
+    # (blitted at x=128): the support post is drawn on both layers, and
+    # on an odd offset the two halves sat a pixel apart - a visible kink
+    # where the cabinet takes over.
+    horn_pos = (W // 2 - 126, 78)  # bell rim centre lands at (260, 124)
     HORN_LAYER = 0.65  # discs at least this big draw over the horn (the
                        # front row); everything smaller sits behind it
 
@@ -388,9 +395,9 @@ def main():
         # bottom arm of the horn's support bracket, mounted on the box's
         # hidden left face: drawn before the front face so its right end
         # disappears behind the body's left edge
-        pygame.draw.rect(s, (124, 110, 72), (5, 24, 13, 6))
-        pygame.draw.line(s, OUT, (10, 24), (17, 24), 1)
-        pygame.draw.line(s, OUT, (5, 29), (17, 29), 1)
+        pygame.draw.rect(s, (124, 110, 72), (4, 24, 13, 6))
+        pygame.draw.line(s, OUT, (9, 24), (16, 24), 1)
+        pygame.draw.line(s, OUT, (4, 29), (16, 29), 1)
         pygame.draw.rect(s, (182, 142, 100), (14, 16, 93, 30))  # body face
         pygame.draw.rect(s, OUT, (14, 16, 93, 30), 1)
         for i, gx in enumerate(range(24, 94, 13)):  # grain dashes
@@ -432,10 +439,10 @@ def main():
         # runs down past the cornice clear of the box's left flank and
         # lands on the bracket's bottom arm (drawn earlier, under the
         # body face, so it reads as mounted on the hidden left side)
-        pygame.draw.rect(s, (124, 110, 72), (5, 0, 6, 24))       # post
-        pygame.draw.line(s, OUT, (5, 0), (5, 29), 1)
-        pygame.draw.line(s, OUT, (10, 0), (10, 23), 1)
-        pygame.draw.line(s, (158, 142, 96), (6, 0), (6, 28), 1)
+        pygame.draw.rect(s, (124, 110, 72), (4, 0, 6, 24))       # post
+        pygame.draw.line(s, OUT, (4, 0), (4, 29), 1)
+        pygame.draw.line(s, OUT, (9, 0), (9, 23), 1)
+        pygame.draw.line(s, (158, 142, 96), (5, 0), (5, 28), 1)
         pygame.draw.line(s, (40, 38, 44), (74, 6), (95, 4), 1)   # tonearm
         pygame.draw.rect(s, (58, 56, 64), (94, 2, 3, 3))         # arm knob
         pygame.draw.rect(s, OUT, (94, 2, 3, 3), 1)
@@ -461,7 +468,7 @@ def main():
     # (the phonograph2 reference). They ride up and to the left - the way
     # the bell leans - swaying and fading as they climb, and die before
     # they reach the wordmark.
-    HORN_MOUTH = (249, 124)
+    HORN_MOUTH = (248, 124)
 
     def build_pixel_note(col, pair):
         if pair:
