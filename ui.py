@@ -237,11 +237,23 @@ def main():
             th = th0 + t * (th1 - th0)
             spine.append((scx + sr * math.cos(th), scy - sr * math.sin(th),
                           7.0 - 3.5 * t, -math.cos(th), math.sin(th)))
-        left = [(x - w * nx, y - w * ny) for x, y, w, nx, ny in spine]
-        right = [(x + w * nx, y + w * ny) for x, y, w, nx, ny in spine]
-        pygame.draw.polygon(s, (168, 132, 74), left + right[::-1])
-        pygame.draw.lines(s, OUT, False, left, 1)
-        pygame.draw.lines(s, OUT, False, right, 1)
+
+        def tube(o):        # both flanks, widened by o along the normals
+            return ([(x - (w + o) * nx, y - (w + o) * ny)
+                     for x, y, w, nx, ny in spine] +
+                    [(x + (w + o) * nx, y + (w + o) * ny)
+                     for x, y, w, nx, ny in spine][::-1])
+
+        # Dark silhouette first, gold filled inside it - never fill a
+        # path and then stroke that same path, which is what spilled
+        # gold outside the stem's outline: pygame's scanline fill and
+        # its line rasteriser disagree by up to a pixel on a slanted
+        # edge. A widened silhouette alone still leaves the rim a pixel
+        # short wherever the flank runs near 45 deg, so it gets a
+        # stroke just inside its edge to close those gaps.
+        pygame.draw.polygon(s, OUT, tube(1.2))
+        pygame.draw.lines(s, OUT, True, tube(0.6), 3)
+        pygame.draw.polygon(s, (168, 132, 74), tube(0.0))
         pygame.draw.lines(s, (214, 176, 106), False,
                           [(x - (w - 2) * nx, y - (w - 2) * ny)
                            for x, y, w, nx, ny in spine], 1)
