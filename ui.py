@@ -203,18 +203,18 @@ def main():
     bg = build_background()
 
     def build_horn():
-        # The whole horn - bell plus the full neck down to the cabinet
-        # socket - on its own transparent layer: draw_carousel blits it
-        # after the small back-row records but before the big front ones,
-        # so the trumpet stands *between* the two rows and the front record
-        # overlaps a solid neck (no gap to flash through if the record is
-        # mid-swap). Pixel-art after the phonograph references: gold bell,
+        # The whole horn - bell, curved golden stem, and the support bar
+        # that holds it up - on its own transparent layer: draw_carousel
+        # blits it after the small back-row records but before the front
+        # row, so the stem dives behind the current record and the one to
+        # its left, and re-emerges below them at the elbow and needle.
+        # Pixel-art after the phonograph references: gold bell,
         # leaning to the left - rings shift left-and-down as they shrink,
         # so the mouth sits off-centre in the rim - with the whole head
         # swung ~30 deg to the right about the mouth.
-        HW, HH = 85, 155                # art px; 170x310 on screen
+        HW, HH = 100, 155               # art px; 200x310 on screen
         s = pygame.Surface((HW, HH), pygame.SRCALPHA)
-        cx, cy = 43, 23                 # bell rim centre -> screen (261, 124)
+        cx, cy = 63, 23                 # bell rim centre -> screen (261, 124)
         brx, bry = 33, 20
         tx, ty = -8, 5                  # full rim-to-mouth lean
 
@@ -222,10 +222,21 @@ def main():
             return cx + (1.0 - f) * tx, cy + (1.0 - f) * ty
 
         OUT = (40, 28, 16)
-        # Neck: brass tube easing from under the bell's mouth side back to
-        # the socket at x=260, tapering as it drops; solid all the way, the
-        # front record just overlaps it.
-        spine = ((39, 38, 7), (41, 74, 6), (42, 112, 5), (42, HH, 4))
+        # Stem: golden tube joining the trumpet's head high on its
+        # lower-left rim - above the records, so the joint stays visible
+        # - swinging left in one smooth quadratic bend and diving behind
+        # the discs down to the box's top-left; at its foot the grey
+        # elbow turns back right to the ball joint, whose needle pin
+        # (cabinet layer) drops onto the record's black surface.
+        bez = ((48, 33), (14, 78), (12, 122))  # rim joint -> bend -> foot
+        spine = []
+        for i in range(13):
+            t = i / 12.0
+            u = 1.0 - t
+            spine.append(
+                (u * u * bez[0][0] + 2 * u * t * bez[1][0] + t * t * bez[2][0],
+                 u * u * bez[0][1] + 2 * u * t * bez[1][1] + t * t * bez[2][1],
+                 7.0 - 3.0 * t))
         left = [(x - w, y) for x, y, w in spine]
         right = [(x + w, y) for x, y, w in spine]
         pygame.draw.polygon(s, (168, 132, 74), left + right[::-1])
@@ -233,6 +244,34 @@ def main():
         pygame.draw.lines(s, OUT, False, right, 1)
         pygame.draw.lines(s, (214, 176, 106), False,
                           [(x - w + 2, y) for x, y, w in spine], 1)
+        # grey metal elbow: quarter-bend annulus off the stem's foot,
+        # then a short run right to the ball joint
+        ecx, ecy = 19, 122
+        quart = [math.pi / 2 + math.pi / 2 * i / 10 for i in range(11)]
+        outer = [(ecx + 10 * math.cos(a), ecy + 10 * math.sin(a)) for a in quart]
+        inner = [(ecx + 4 * math.cos(a), ecy + 4 * math.sin(a)) for a in quart]
+        pygame.draw.polygon(s, (150, 150, 158), outer + inner[::-1])
+        pygame.draw.lines(s, OUT, False, outer, 1)
+        pygame.draw.lines(s, OUT, False, inner, 1)
+        pygame.draw.lines(s, (200, 202, 210), False,
+                          [(ecx + 8 * math.cos(a), ecy + 8 * math.sin(a))
+                           for a in quart], 1)
+        pygame.draw.rect(s, (150, 150, 158), (19, 127, 12, 6))  # run to ball
+        pygame.draw.line(s, OUT, (19, 127), (30, 127), 1)
+        pygame.draw.line(s, OUT, (19, 132), (30, 132), 1)
+        pygame.draw.line(s, (200, 202, 210), (19, 128), (29, 128), 1)
+        # Support beam (phonograph1, mirrored): khaki post from the
+        # stem's foot collar down the box's left flank - the cabinet
+        # layer continues it past the cornice to a bolted foot plate -
+        # holding the trumpet up from the side of the box.
+        BAR = (124, 110, 72)
+        pygame.draw.rect(s, BAR, (7, 121, 4, HH - 121))        # post
+        pygame.draw.rect(s, OUT, (7, 121, 4, HH - 121), 1)
+        pygame.draw.rect(s, (188, 150, 86), (7, 119, 11, 5))   # joint collar
+        pygame.draw.rect(s, OUT, (7, 119, 11, 5), 1)
+        pygame.draw.ellipse(s, (72, 58, 44), (29, 132, 8, 8))  # ball joint
+        pygame.draw.ellipse(s, OUT, (29, 132, 8, 8), 1)
+        s.set_at((31, 134), (150, 150, 158))
         # Bell: outlined rim, gold deepening toward the throat. Drawn on
         # its own layer, then swung about the mouth so the head bends
         # right while the neck stays put and notes keep spawning from the
@@ -271,7 +310,7 @@ def main():
         return pixel_up(s)
 
     horn = build_horn()
-    horn_pos = (W // 2 - 85, 78)  # bell rim centre lands at (261, 124)
+    horn_pos = (W // 2 - 125, 78)  # bell rim centre lands at (261, 124)
     HORN_LAYER = 0.65  # discs at least this big draw over the horn (the
                        # front row); everything smaller sits behind it
 
@@ -284,9 +323,9 @@ def main():
         # on blocky feet, the front mirrored around x=60 with depth faces
         # receding up-and-right - with a big gold title plate the track
         # text lands on, and a vinyl record lying flat on the lid,
-        # tonearm resting across it. The horn's neck drops into the
-        # record's label at x=260 like a spindle. Drawn in art pixels
-        # and nearest-scaled up.
+        # tonearm resting across it. The horn's neck ends above the lid;
+        # only its needle pin drops into the record's centre hole at
+        # x=260. Drawn in art pixels and nearest-scaled up.
         AW, AH = 128, 56                        # art px; 256x112 on screen
         s = pygame.Surface((AW, AH), pygame.SRCALPHA)
         OUT = (30, 20, 15)
@@ -343,7 +382,7 @@ def main():
         pygame.draw.ellipse(s, (44, 42, 48), (48, 5, 36, 3), 1)
         pygame.draw.ellipse(s, (200, 160, 92), (56, 3, 20, 7))   # label
         pygame.draw.ellipse(s, (40, 28, 16), (56, 3, 20, 7), 1)
-        pygame.draw.ellipse(s, (12, 9, 7), (59, 4, 14, 5))       # spindle hole
+        pygame.draw.ellipse(s, (12, 9, 7), (63, 5, 6, 3))        # centre hole
         # cornice: front strip and right side face, drawn after the
         # record so the moulding lips over the disc's front rim
         pygame.draw.polygon(s, (76, 40, 28),
@@ -353,14 +392,25 @@ def main():
         pygame.draw.rect(s, (104, 56, 40), (10, 12, 101, 5))
         pygame.draw.rect(s, OUT, (10, 12, 101, 5), 1)
         pygame.draw.line(s, (150, 92, 66), (11, 13), (109, 13), 1)
+        # the horn's support beam comes out of the box (phonograph1):
+        # the post (horn layer above, continued here) runs down past the
+        # cornice along the box's left flank and bolts into the body's
+        # side with a foot plate at mid-height
+        pygame.draw.rect(s, (124, 110, 72), (11, 0, 4, 27))      # post
+        pygame.draw.line(s, OUT, (11, 0), (11, 26), 1)
+        pygame.draw.line(s, OUT, (14, 0), (14, 26), 1)
+        pygame.draw.rect(s, (96, 84, 56), (10, 26, 7, 4))        # foot plate
+        pygame.draw.rect(s, OUT, (10, 26, 7, 4), 1)
+        s.set_at((13, 28), (170, 152, 104))                      # bolt
         pygame.draw.line(s, (40, 38, 44), (74, 6), (95, 4), 1)   # tonearm
         pygame.draw.rect(s, (58, 56, 64), (94, 2, 3, 3))         # arm knob
         pygame.draw.rect(s, OUT, (94, 2, 3, 3), 1)
-        # neck stub, meeting the horn layer's neck at x=260
-        pygame.draw.rect(s, (168, 132, 74), (62, 0, 8, 8))
-        pygame.draw.line(s, OUT, (61, 0), (61, 7), 1)
-        pygame.draw.line(s, OUT, (70, 0), (70, 7), 1)
-        pygame.draw.line(s, (214, 176, 106), (63, 0), (63, 7), 1)
+        # needle pin: thin steel drop from the elbow's ball joint (on
+        # the horn layer, resting at the cabinet's top edge) onto the
+        # record's black surface left of the label - the needle rides
+        # the grooves, not the centre
+        pygame.draw.rect(s, (150, 148, 158), (36, 0, 2, 7))
+        pygame.draw.line(s, (96, 94, 104), (37, 0), (37, 6), 1)
         # the gold plate, sized to the track text: 168-328 x 396-450 on
         # screen; title + artist render over it, centred at box_cx=248
         pygame.draw.rect(s, (204, 160, 90), (20, 19, 81, 27))
