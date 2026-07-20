@@ -1,4 +1,4 @@
-# so python Main.py and the PyInstaller spec work unchanged
+# this file is for 'python Main.py' and the PyInstaller spec to work unchanged
 
 from ui import main
 
