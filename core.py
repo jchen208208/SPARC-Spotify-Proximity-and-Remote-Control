@@ -1,11 +1,11 @@
 # serial/Bluetooth handling, port discovery, Spotify client and actions, volume ramping, and run_worker
 
-import io
 import os
+import sys
+import io
 import queue
 import shutil
 import subprocess
-import sys
 import time
 import threading
 import requests
@@ -17,14 +17,85 @@ import pygame
 from spotipy.oauth2 import SpotifyOAuth
 from dotenv import load_dotenv
 
-# --- Windowed builds (pyinstaller --windowed) have no console, so sys.stdout
-# and sys.stderr come back as None - every print() call in this file (there
-# are a lot) would crash the instant it ran. Give them a harmless sink
-# instead of hunting down and guarding every call site.
-if sys.stdout is None:
-    sys.stdout = open(os.devnull, "w")
-if sys.stderr is None:
-    sys.stderr = open(os.devnull, "w")
+# --- Windowed builds (pyinstaller --windowed) have no console. Depending on
+# the exact PyInstaller version / --onefile-vs-onedir combo, that shows up
+# two different ways: sys.stdout/sys.stderr come back as plain None, OR
+# they're real-looking objects that raise OSError("Bad file descriptor")
+# the moment anything is actually written to them (a known quirk of the
+# --onefile --windowed bootloader on Windows). The old fix here only
+# checked for the None case, so on this build it did nothing, and every
+# print() call in this file (there are a lot - they're this app's only
+# debugging output) would kill whatever thread hit it first. A background
+# thread's uncaught exception ends that thread with no visible error, which
+# is exactly what was happening: the windowed build would connect fine,
+# then die silently on the very first "Controller connected on {port}."
+# print - right before the line that starts the serial-reading thread - so
+# gestures could never be read at all, while the UI kept showing "Connected"
+# because that status had already been set a line earlier.
+#
+# Fix: test-write to both streams (catches either failure mode) and, if
+# either is broken, swap in a stream that can never raise - backed by a log
+# file rather than os.devnull, so hiding the console doesn't mean losing all
+# visibility. This has to happen before pygame is imported below: pygame
+# prints a "Hello from the pygame community" line the instant it's
+# imported, and that would crash right here otherwise.
+
+
+class _SafeLogStream:
+    """A write target that can never raise, no matter what's wrong with the
+    real stdout/stderr. Backed by a real file when possible so hiding the
+    console doesn't mean losing all visibility into what the app is doing."""
+
+    def __init__(self, path):
+        try:
+            self._f = open(path, "w", buffering=1, encoding="utf-8", errors="replace")
+        except OSError:
+            self._f = None  # e.g. nowhere writable - fall through to silence
+
+    def write(self, data):
+        if self._f is not None:
+            try:
+                self._f.write(data)
+            except Exception:
+                self._f = None  # proven broken - stop trying, just swallow from here on
+
+    def flush(self):
+        if self._f is not None:
+            try:
+                self._f.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        return False
+
+
+def _is_broken(stream):
+    """True if writing to `stream` raises - covers both "it's None" and "it
+    looks fine but dies on write" without needing to know which one a given
+    PyInstaller build produces."""
+    if stream is None:
+        return True
+    try:
+        stream.write("")
+        stream.flush()
+        return False
+    except Exception:
+        return True
+
+
+if _is_broken(sys.stdout) or _is_broken(sys.stderr):
+    _log_dir = os.path.join(os.path.expanduser("~"), ".sparc_cache")
+    try:
+        os.makedirs(_log_dir, exist_ok=True)
+    except OSError:
+        pass
+    _log = _SafeLogStream(os.path.join(_log_dir, "sparc.log"))
+    sys.stdout = _log
+    sys.stderr = _log
+
+# --- Everything else, now that stdout/stderr are safe to write to ---
+
 
 # --- Resolve base directory whether frozen (PyInstaller) or running as .py ---
 if getattr(sys, 'frozen', False):
