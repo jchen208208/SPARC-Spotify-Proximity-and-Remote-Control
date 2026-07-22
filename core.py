@@ -1,7 +1,6 @@
 # serial/Bluetooth handling, port discovery, Spotify client and actions, volume ramping, and run_worker
 
 import io
-import math
 import os
 import queue
 import shutil
@@ -14,20 +13,27 @@ import serial
 import serial.tools.list_ports
 import json
 import spotipy
-
-os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
-
 import pygame
 from spotipy.oauth2 import SpotifyOAuth
 from dotenv import load_dotenv
 
+# --- Windowed builds (pyinstaller --windowed) have no console, so sys.stdout
+# and sys.stderr come back as None - every print() call in this file (there
+# are a lot) would crash the instant it ran. Give them a harmless sink
+# instead of hunting down and guarding every call site.
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w")
+
 # --- Resolve base directory whether frozen (PyInstaller) or running as .py ---
 if getattr(sys, 'frozen', False):
-    BASE_DIR = sys._MEIPASS
+    BASE_DIR = sys._MEIPASS                    # bundled assets (fonts/images/sounds)
+    ENV_DIR = os.path.dirname(sys.executable)  # .env stays external, next to the built exe
 else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    BASE_DIR = ENV_DIR = os.path.dirname(os.path.abspath(__file__))
 
-load_dotenv(os.path.join(BASE_DIR, '.env'))
+load_dotenv(os.path.join(ENV_DIR, '.env'))
 
 BAUD_RATE = 9600
 HANDSHAKE_TIMEOUT = 4.0  # a port must answer within this to count as our board
@@ -59,7 +65,6 @@ SOUND_DISCONNECTED = os.path.join(ASSET_DIR, "disconnected.mp3")
 # paired, both match and the handshake picks whichever answers - set BT_PORT to
 # pin one. (Boards from other Espressif batches have a different OUI and fall
 # through to the Bluetooth-port sweep below, which finds them too, just slower.)
-ESP32_OUI = "8C94DF"
 
 DEVICE_HINTS = ("SPARC", "HC-05", "HC05", "ESP32", ESP32_OUI)
 
@@ -67,19 +72,19 @@ DEVICE_HINTS = ("SPARC", "HC-05", "HC05", "ESP32", ESP32_OUI)
 def candidate_ports(verbose=False):
     """Serial ports that might be a SPARC controller, most likely first.
 
-	The two OSes tell us completely different things about a Bluetooth port, so
-	we match on whatever each one actually gives us:
+    The two OSes tell us completely different things about a Bluetooth port, so
+    we match on whatever each one actually gives us:
 
-	macOS names the port after the device (/dev/cu.SPARC, /dev/cu.HC-05), so the
-	name hints match outright - but it never exposes a MAC (hwid is "n/a").
+    macOS names the port after the device (/dev/cu.SPARC, /dev/cu.HC-05), so the
+    name hints match outright - but it never exposes a MAC (hwid is "n/a").
 
-	Windows is the mirror image: the description is always "Standard Serial over
-	Bluetooth link", with no trace of the device name, but the MAC *is* there in
-	the hwid. So we match Espressif's OUI - the first three bytes of every ESP32's
-	MAC - which is how the Windows side has always identified the board. Anything
-	Bluetooth-ish that we can't identify is still offered up as a last resort, and
-	open_device()'s handshake decides which one is really ours.
-	"""
+    Windows is the mirror image: the description is always "Standard Serial over
+    Bluetooth link", with no trace of the device name, but the MAC *is* there in
+    the hwid. So we match Espressif's OUI - the first three bytes of every ESP32's
+    MAC - which is how the Windows side has always identified the board. Anything
+    Bluetooth-ish that we can't identify is still offered up as a last resort, and
+    open_device()'s handshake decides which one is really ours.
+    """
     named, fallback, seen = [], [], []
     for port in serial.tools.list_ports.comports():
         blob = " ".join(filter(None, (port.device, port.description, port.hwid))).upper()
@@ -108,9 +113,9 @@ PORT_CACHE = os.path.join(os.path.expanduser("~"), ".sparc_cache", "port.json")
 
 def _load_cached_port():
     """The port that answered last time this machine ran. Probing a Bluetooth
-	port that turns out to be dead costs ~4s, so on a machine with several
-	boards paired a cold scan is slow; remembering the winner makes every run
-	after the first go straight to it."""
+    port that turns out to be dead costs ~4s, so on a machine with several
+    boards paired a cold scan is slow; remembering the winner makes every run
+    after the first go straight to it."""
     try:
         with open(PORT_CACHE) as f:
             return json.load(f).get("port")
@@ -129,10 +134,10 @@ def _save_cached_port(port):
 
 def resolve_ports(preferred=None):
     """Ports to try this round: last known good, then the .env override, then
-	the port cached from a previous run, then whatever autodetect turns up.
-	Re-run on every reconnect rather than once at startup, so a board powered on
-	after the app is still picked up. A stale entry costs nothing: it just fails
-	the handshake and we fall through to the next candidate."""
+    the port cached from a previous run, then whatever autodetect turns up.
+    Re-run on every reconnect rather than once at startup, so a board powered on
+    after the app is still picked up. A stale entry costs nothing: it just fails
+    the handshake and we fall through to the next candidate."""
     ports = []
     for port in (preferred, os.getenv("BT_PORT"), _load_cached_port()):
         if port and port not in ports:
@@ -145,16 +150,15 @@ def resolve_ports(preferred=None):
 
 def open_device(port):
     """Open `port` and prove a real controller is on the other end, else None.
-
-	A successful open() means nothing by itself: macOS hands back the port of a
-	paired-but-powered-off HC-05 quite happily, and on Windows we may well be
-	probing some unrelated Bluetooth device. Without this proof we'd flip to
-	"connected", time out on the silence seconds later, reconnect, and loop
-	forever spamming the connect/disconnect sounds. The probe is re-sent each
-	tick so a still-booting board isn't rejected for missing the first one.
-	The Nano and ESP32 answer "ACK" and the Uno answers "HB" - any line at all
-	is proof of life, so we needn't care which board we got.
-	"""
+    A successful open() means nothing by itself: macOS hands back the port of a
+    paired-but-powered-off HC-05 quite happily, and on Windows we may well be
+    probing some unrelated Bluetooth device. Without this proof we'd flip to
+    "connected", time out on the silence seconds later, reconnect, and loop
+    forever spamming the connect/disconnect sounds. The probe is re-sent each
+    tick so a still-booting board isn't rejected for missing the first one.
+    The Nano and ESP32 answer "ACK" and the Uno answers "HB" - any line at all
+    is proof of life, so we needn't care which board we got.
+    """
     ser = serial.Serial(port, BAUD_RATE, timeout=0.3)
     try:
         ser.reset_input_buffer()
@@ -175,7 +179,7 @@ def open_device(port):
 
 def _blueutil_path():
     """Locate blueutil even when PATH is minimal (e.g. a PyInstaller app
-	launched from Finder, which doesn't inherit a shell's PATH)."""
+    launched from Finder, which doesn't inherit a shell's PATH)."""
     return (shutil.which("blueutil")
             or next((p for p in ("/opt/homebrew/bin/blueutil",
                                  "/usr/local/bin/blueutil")
@@ -184,9 +188,9 @@ def _blueutil_path():
 
 def _resolve_bt_addr(port):
     """macOS: map the serial port back to its Bluetooth MAC so a stale link can
-	be forced down on disconnect. macOS otherwise keeps the dropped RFCOMM
-	channel half-open and refuses to re-establish it until the device is
-	manually removed and re-paired. Honours a BT_MAC override in .env."""
+    be forced down on disconnect. macOS otherwise keeps the dropped RFCOMM
+    channel half-open and refuses to re-establish it until the device is
+    manually removed and re-paired. Honours a BT_MAC override in .env."""
     if sys.platform != "darwin" or not port:
         return None
     addr = os.getenv("BT_MAC")
@@ -209,10 +213,10 @@ def _resolve_bt_addr(port):
 
 def force_bt_disconnect(port):
     """Tear down the OS-level Bluetooth link to the board. After an abrupt power
-	loss macOS leaves the RFCOMM channel half-open, which blocks every reconnect
-	attempt until it's dropped - this is the programmatic equivalent of 'forget
-	& re-add' minus the unpairing, so the next port open() negotiates a fresh
-	link. Best-effort and a no-op off macOS / without blueutil."""
+    loss macOS leaves the RFCOMM channel half-open, which blocks every reconnect
+    attempt until it's dropped - this is the programmatic equivalent of 'forget
+    & re-add' minus the unpairing, so the next port open() negotiates a fresh
+    link. Best-effort and a no-op off macOS / without blueutil."""
     addr = _resolve_bt_addr(port)
     if not addr:
         return
@@ -255,9 +259,9 @@ _art_cache_lock = threading.Lock()
 
 def fetch_album_art(url):
     """Download and cache album art by URL (Spotify's smallest size, ~64x64).
-	Returns a pygame Surface, or None on any failure so callers can fall back
-	to a placeholder. Scaling to display size happens at draw time, since
-	prev/current/next render the same image at different sizes."""
+    Returns a pygame Surface, or None on any failure so callers can fall back
+    to a placeholder. Scaling to display size happens at draw time, since
+    prev/current/next render the same image at different sizes."""
     if not url:
         return None
     with _art_cache_lock:
@@ -282,10 +286,10 @@ _ser_write_lock = threading.Lock()
 
 def ser_write(ser, data):
     """Best-effort thread-safe write to the shared serial connection.
-	Several threads (heartbeat, volume ramp, command handlers) can write
-	to the Arduino concurrently - the lock keeps their messages from
-	interleaving mid-line, and a bad/closed port is just silently skipped
-	the same way every call site already treated it."""
+    Several threads (heartbeat, volume ramp, command handlers) can write
+    to the Arduino concurrently - the lock keeps their messages from
+    interleaving mid-line, and a bad/closed port is just silently skipped
+    the same way every call site already treated it."""
     if not ser or not ser.is_open:
         return
     try:
@@ -449,15 +453,15 @@ def get_handlers(ser):
 def _serial_reader(ser, line_queue, stop_flag):
     """Runs in its own thread and does nothing but pull lines off the wire.
 
-	If the HC-05 loses power, the underlying OS Bluetooth stack can leave
-	a blocking read() hanging well past pyserial's own `timeout` setting -
-	often 20-30s - while it waits out its own link-supervision timeout
-	before reporting the port as dead. Isolating the read here means that
-	hang never stops the main loop from independently noticing (on its own
-	clock, via the queue below) that no data has arrived in a while and
-	reacting immediately, instead of being stuck waiting for this call to
-	return.
-	"""
+    If the HC-05 loses power, the underlying OS Bluetooth stack can leave
+    a blocking read() hanging well past pyserial's own `timeout` setting -
+    often 20-30s - while it waits out its own link-supervision timeout
+    before reporting the port as dead. Isolating the read here means that
+    hang never stops the main loop from independently noticing (on its own
+    clock, via the queue below) that no data has arrived in a while and
+    reacting immediately, instead of being stuck waiting for this call to
+    return.
+    """
     while not stop_flag.is_set():
         try:
             raw = ser.readline()
@@ -473,9 +477,9 @@ def _serial_reader(ser, line_queue, stop_flag):
 
 def _dispatch_command(handler, sp, line):
     """Runs a Spotify command handler on its own thread, so a slow Spotify
-	API call can never block the main loop's disconnect-detection timing -
-	that coupling was what caused occasional timeouts unrelated to the
-	Arduino actually going away."""
+    API call can never block the main loop's disconnect-detection timing -
+    that coupling was what caused occasional timeouts unrelated to the
+    Arduino actually going away."""
     try:
         handler(sp)
     except spotipy.exceptions.SpotifyException as e:
@@ -485,7 +489,6 @@ def _dispatch_command(handler, sp, line):
 
 
 def run_worker(stop_event, status):
-    global BT_PORT, BT_ADDR
 
     sp = get_spotify()
 
@@ -506,6 +509,7 @@ def run_worker(stop_event, status):
     active_port = None  # last port that actually handshook - retried first
     arduino_connected = False
     spotify_connected = False
+    spotify_fail_count = 0  # consecutive failed Spotify polls; see update_spotify_status
     was_connected = False
     HANDLERS = {}
     line_queue = queue.Queue()
@@ -519,6 +523,7 @@ def run_worker(stop_event, status):
     ARDUINO_TIMEOUT = 3.0
     HEARTBEAT_INTERVAL = 1.0
     SPOTIFY_CHECK_INTERVAL = 5.0
+    SPOTIFY_FAIL_THRESHOLD = 2  # consecutive failed polls (~10s) before we call it disconnected
     track_state = {"prev": None, "current_id": None}
 
     def close_arduino_link(state):
@@ -555,61 +560,58 @@ def run_worker(stop_event, status):
             "art": fetch_album_art(art_url),
         }
 
-    def _update_track_state(item, context_uri):
+    def _update_track_state(item):
         # Spotify's API has no "previous track" endpoint, so prev is inferred
         # by watching the current track ID change between polls. A skip that
         # happens between two polls (SPOTIFY_CHECK_INTERVAL apart) can be
         # missed if two changes land in the same window.
-        # All slow work (art downloads, the order/queue round-trips) happens
-        # before any status key is written, so the UI never sees a
-        # half-updated snapshot - e.g. the new current track next to the old
-        # queue.
+        # All slow work (art downloads, the queue round-trip) happens before
+        # any status key is written, so the UI never sees a half-updated
+        # snapshot - e.g. the new current track next to the old queue.
         info = _track_info(item)
-        window = _playlist_window(context_uri, item.get("id"))
-        if window is not None:
-            # The context's running order is known: both sides of the wheel
-            # come straight from it, and the queue round-trip is skipped.
-            prevs, qinfos = window
-        else:
-            prevs = None
-            try:
-                q_items = sp.queue().get("queue", [])
-                qinfos = [_track_info(q) for q in q_items[:5]]
-            except Exception:
-                qinfos = []
+        try:
+            q_items = sp.queue().get("queue", [])
+            qinfos = [_track_info(q) for q in q_items[:5]]
+        except Exception:
+            qinfos = []
         cur_id = item.get("id")
         if cur_id and cur_id != track_state["current_id"]:
             if track_state["current_id"] is not None:
                 track_state["prev"] = status.get("track_current")
             track_state["current_id"] = cur_id
         status["track_prev"] = track_state["prev"]
-        status["track_prevs"] = prevs
         status["track_queue"] = qinfos
         status["track_current"] = info
 
     def update_spotify_status():
-        nonlocal spotify_connected
+        nonlocal spotify_connected, spotify_fail_count
         playing = False
         try:
             playback = sp.current_playback()
             if playback and playback.get("device"):
                 spotify_connected = True
+                spotify_fail_count = 0
                 playing = bool(playback.get("is_playing"))
-                context = playback.get("context")
-                # Context lands before the track: on a playlist switch the
-                # UI hard-cuts when the URI changes, so the new track then
-                # reads as a clean cold start instead of animating across
-                # contexts.
-                status["context_uri"] = context.get("uri") if context else None
-                status["shuffle"] = bool(playback.get("shuffle_state"))
                 item = playback.get("item")
                 if item:
-                    _update_track_state(item, status["context_uri"])
+                    _update_track_state(item)
+                context = playback.get("context")
+                status["context_uri"] = context.get("uri") if context else None
             else:
                 devices = sp.devices().get("devices", [])
                 spotify_connected = bool(devices)
-        except Exception:
-            spotify_connected = False
+                if spotify_connected:
+                    spotify_fail_count = 0
+        except Exception as e:
+            # A single failed poll is usually a network blip or a Spotify
+            # rate limit, not a real disconnect - only give up on the
+            # connection after a few in a row (mirrors ARDUINO_TIMEOUT's
+            # grace period on the serial side). Logged so a persistent drop
+            # shows its real cause here instead of just going silent.
+            spotify_fail_count += 1
+            print(f"  Spotify poll failed ({spotify_fail_count}/{SPOTIFY_FAIL_THRESHOLD}): {e}")
+            if spotify_fail_count >= SPOTIFY_FAIL_THRESHOLD:
+                spotify_connected = False
         status["playing"] = playing
         if spotify_connected:
             status["spotify"] = f"Logged in as {user_name}"
@@ -618,80 +620,16 @@ def run_worker(stop_event, status):
             status["spotify"] = "No active Spotify device"
             status["spotify_state"] = "err"
 
-    # One context's full running order, fetched once and reused every poll.
-    # The Web API never says where the playing track sits in its context -
-    # current_playback() gives the track and the context URI, nothing more -
-    # so the order is fetched wholesale and the position found by ID.
-    # "missing" remembers an ID that wasn't in the list (a one-off queued
-    # track, a playlist past the fetch cap) so it isn't refetched every poll.
-    ctx_order = {"uri": None, "items": None, "ids": [], "missing": None}
-
-    def _fetch_context_items(uri):
-        # Playlists and albums are the contexts with a readable running
-        # order; radio, liked songs and bare tracks aren't pageable, and
-        # very deep playlists get cut off rather than paged forever.
-        kind = uri.split(":")[1] if uri.count(":") >= 2 else None
-        if kind == "album":
-            alb = sp.album(uri)
-            items = alb.get("tracks", {}).get("items", [])
-            for tr in items:
-                tr["album"] = alb  # album tracks omit it, and art lives there
-            return items
-        if kind != "playlist":
-            return None
-        fields = "items(track(id,name,artists(name),album(images))),next"
-        items, offset = [], 0
-        while offset < 500:
-            page = sp.playlist_items(uri, fields=fields, limit=100, offset=offset)
-            items.extend(it.get("track") for it in page.get("items", []) if it.get("track"))
-            if not page.get("next"):
-                break
-            offset += 100
-        return items
-
-    def _refresh_ctx_order(uri):
-        items = _fetch_context_items(uri)
-        ctx_order.update(uri=uri, items=items, missing=None,
-                         ids=[tr.get("id") for tr in (items or [])])
-
-    def _playlist_window(uri, cur_id):
-        # (prevs, nexts) around the current track in *playlist* order, or
-        # None when the order can't be known. Shuffle deliberately doesn't
-        # change this: the wheel shows the playlist as written, not the play
-        # order - a shuffled skip just recenters the window (the UI's "jump"
-        # crossfade) instead of spinning one seat over.
-        if not uri or not cur_id:
-            return None
-        try:
-            if ctx_order["uri"] != uri:
-                _refresh_ctx_order(uri)
-            elif (ctx_order["items"] is not None and cur_id != ctx_order["missing"]
-                    and cur_id not in ctx_order["ids"]):
-                # Not there? The playlist may have been edited since the
-                # fetch - look again, once per unknown ID.
-                _refresh_ctx_order(uri)
-        except Exception as e:
-            print(f"  Context order unavailable: {e}")
-            ctx_order["uri"] = None  # retry from scratch next poll
-            return None
-        if ctx_order["items"] is None:
-            return None
-        if cur_id not in ctx_order["ids"]:
-            ctx_order["missing"] = cur_id  # e.g. a queued one-off track
-            return None
-        # A track that appears twice in one playlist is ambiguous - the API
-        # doesn't say which copy is playing - so the first occurrence wins.
-        i = ctx_order["ids"].index(cur_id)
-        items = ctx_order["items"]
-        return ([_track_info(tr) for tr in items[max(0, i - 5):i]],
-                [_track_info(tr) for tr in items[i + 1:i + 6]])
-
-    def _recently_played():
+    def seed_history():
+        # Spotify's recently-played endpoint knows what came before this
+        # session, so the wheel's prev slots get real covers from the first
+        # frame instead of waiting for tracks to change while the app runs.
+        # One-shot: once the UI consumes it, its own history takes over.
         try:
             items = sp.current_user_recently_played(limit=12).get("items", [])
         except Exception as e:
             print(f"  Recently played unavailable: {e}")
-            return []
+            return
         # Tracks skipped past earlier show up both here and in the upcoming
         # queue; seeding those would put the same cover on both sides of the
         # wheel, so anything queued is excluded from history.
@@ -707,18 +645,7 @@ def run_worker(stop_event, status):
             last_id = tr["id"]
             if len(hist) == 5:
                 break
-        return hist[::-1]  # oldest first, like the UI's hist
-
-    def seed_history():
-        # One-shot fallback seed for contexts whose running order can't be
-        # read (radio, liked songs): the recently-played endpoint at least
-        # knows what came before this session. When the order IS readable,
-        # track_prevs (kept live above) fills the left of the wheel
-        # continuously and no seed is wanted.
-        if status.get("track_prevs") is not None:
-            status["track_history"] = []
-        else:
-            status["track_history"] = _recently_played()
+        status["track_history"] = hist[::-1]  # oldest first, like the UI's hist
 
     update_spotify_status()
     seed_history()
@@ -865,4 +792,3 @@ def run_worker(stop_event, status):
     # instead of negotiating a fresh one - which is what forces a manual "forget
     # this device & re-pair" between runs. Drop the link on the way out.
     force_bt_disconnect(active_port)
-
