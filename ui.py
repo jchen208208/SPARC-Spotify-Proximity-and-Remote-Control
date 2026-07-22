@@ -6,13 +6,38 @@ import math
 import os
 import threading
 import time
-
+import sys
 import pygame
 
 from core import ASSET_DIR, LAST_ACTION, run_worker
 
 
 def main():
+    if sys.platform == "win32":
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+    dpi_scale = 1.0
+    if sys.platform == "win32":
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+        try:
+            hdc = ctypes.windll.user32.GetDC(0)
+            dpi_scale = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88) / 96.0  # LOGPIXELSX
+            ctypes.windll.user32.ReleaseDC(0, hdc)
+        except Exception:
+            dpi_scale = 1.0
     pygame.init()
     W, H = 520, 660
     logo = None
@@ -20,14 +45,15 @@ def main():
     try:
         # icon.png is the macOS-style app icon (white rounded plate, blue
         # symbol); logo.png stays the in-window header art.
-        pygame.display.set_icon(pygame.image.load(os.path.join(ASSET_DIR, "icon.png")))
+        pygame.display.set_icon(pygame.image.load(os.path.join(ASSET_DIR, "SPARC_Logo_Titleless.png")))
     except Exception as e:
         print(f"  Icon error: {e}")
     try:
         logo = pygame.image.load(os.path.join(ASSET_DIR, "logo_titleless.png"))
     except Exception as e:
         print(f"  Logo error: {e}")
-    screen = pygame.display.set_mode((W, H))
+    window = pygame.display.set_mode((round(W * dpi_scale), round(H * dpi_scale)))
+    screen = pygame.Surface((W, H))  # everything below still draws at 520x660
     pygame.display.set_caption("SPARC Controller")
     if logo:
         logo = logo.convert_alpha()
@@ -584,6 +610,7 @@ def main():
             hint_img = hint_font.render("Close this window to quit", True, (104, 106, 120))
             screen.blit(hint_img, (W // 2 - hint_img.get_width() // 2, H - 28))
 
+            window.blit(pygame.transform.smoothscale(screen, window.get_size()) if dpi_scale != 1.0 else screen, (0, 0))
             pygame.display.flip()
             clock.tick(60)
     except KeyboardInterrupt:
