@@ -5,12 +5,12 @@ BluetoothSerial btSerial;
 #include "Adafruit_VL53L0X.h"
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
-#include <Adafruit_NeoPixel.h>
+#include <FastLED.h>
 
 #define LED_PIN 18
-#define NUMPIXELS 8   // set to your actual LED count
+#define NUMPIXELS 8
 
-Adafruit_NeoPixel strip(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
+CRGB leds[NUMPIXELS];
 
 const int ledPause = 4;
 
@@ -84,12 +84,22 @@ void updateVolumeLEDs(int vol) {
 
   for (int i = 0; i < NUMPIXELS; i++) {
     if (i < bars) {
-      strip.setPixelColor(i, strip.Color(0, 255, 0)); // green — change as you like
+      float pos = (float)i / (NUMPIXELS - 1);
+
+      int r, g;
+      if (pos < 0.5) {
+        r = map(pos * 100, 0, 50, 0, 255);
+        g = 255;
+      } else {
+        r = 255;
+        g = map(pos * 100, 50, 100, 255, 0);
+      }
+      leds[i] = CRGB(r, g, 0);
     } else {
-      strip.setPixelColor(i, 0); // off
+      leds[i] = CRGB::Black;
     }
   }
-  strip.show();
+  FastLED.show();
 }
 
 void resetGestureState() {
@@ -108,8 +118,9 @@ void setup() {
 
   Wire.begin(21, 22); // SDA, SCL
 
-  strip.begin();
-  strip.show(); // all off initially
+  FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
+  FastLED.clear();
+  FastLED.show();
 
   // On a cold power-up the VL53L0X shares the ESP32's rail and is still booting
   // when we get here, so an immediate begin() finds nothing - and the old sketch
@@ -160,6 +171,7 @@ void loop() {
       volumeActive = false;
     } else if (msg.startsWith("VOL")) {
       int vol = msg.substring(3).toInt();
+      Serial.println(vol);
       updateVolumeLEDs(vol); 
     }
   }
