@@ -5,6 +5,13 @@ BluetoothSerial btSerial;
 #include "Adafruit_VL53L0X.h"
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
+#include <Adafruit_NeoPixel.h>
+
+#define LED_PIN 18
+#define NUMPIXELS 8   // set to your actual LED count
+
+Adafruit_NeoPixel strip(NUMPIXELS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
 const int ledPause = 4;
 
 // Zone boundaries in cm
@@ -71,6 +78,19 @@ void handleFlash() {
   }
 }
 
+void updateVolumeLEDs(int vol) {
+  int bars = map(vol, 0, 100, 0, NUMPIXELS);
+  if (vol > 0 && bars == 0) bars = 1; // any nonzero volume shows at least 1 LED
+
+  for (int i = 0; i < NUMPIXELS; i++) {
+    if (i < bars) {
+      strip.setPixelColor(i, strip.Color(0, 255, 0)); // green — change as you like
+    } else {
+      strip.setPixelColor(i, 0); // off
+    }
+  }
+  strip.show();
+}
 
 void resetGestureState() {
   passCount = 0;
@@ -87,6 +107,9 @@ void setup() {
   btSerial.begin("SPARC");
 
   Wire.begin(21, 22); // SDA, SCL
+
+  strip.begin();
+  strip.show(); // all off initially
 
   // On a cold power-up the VL53L0X shares the ESP32's rail and is still booting
   // when we get here, so an immediate begin() finds nothing - and the old sketch
@@ -114,6 +137,7 @@ void loop() {
   bool nowConnected = (millis() - lastHeartbeat <= HEARTBEAT_TIMEOUT);
   if (!nowConnected && btConnected) {
     digitalWrite(ledPause, LOW);
+    updateVolumeLEDs(0); 
     flashPin = -1;
     resetGestureState();
     handInZone = false;
@@ -136,6 +160,7 @@ void loop() {
       volumeActive = false;
     } else if (msg.startsWith("VOL")) {
       int vol = msg.substring(3).toInt();
+      updateVolumeLEDs(vol); 
     }
   }
 
