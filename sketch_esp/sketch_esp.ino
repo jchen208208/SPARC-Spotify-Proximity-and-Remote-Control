@@ -119,7 +119,7 @@ void setup() {
   Wire.begin(21, 22); // SDA, SCL
 
   FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
-  FastLED.setBrightness(153); // 60% of full (255); LED strip was too bright
+  FastLED.setBrightness(10);
   FastLED.clear();
   FastLED.show();
 
