@@ -86,15 +86,11 @@ void updateVolumeLEDs(int vol) {
     if (i < bars) {
       float pos = (float)i / (NUMPIXELS - 1);
 
-      int r, g;
-      if (pos < 0.5) {
-        r = map(pos * 100, 0, 50, 0, 255);
-        g = 255;
-      } else {
-        r = 255;
-        g = map(pos * 100, 50, 100, 255, 0);
-      }
-      leds[i] = CRGB(r, g, 0);
+      // SPARC blue: light blue (first LED) → dark blue (last LED)
+      int r = map(pos * 100, 0, 100, 120,   0);
+      int g = map(pos * 100, 0, 100, 200,   0);
+      int b = map(pos * 100, 0, 100, 255, 120);
+      leds[i] = CRGB(r, g, b);
     } else {
       leds[i] = CRGB::Black;
     }
