@@ -78,6 +78,10 @@ def main():
 
     TEXT = (238, 240, 246)
     DIM = (132, 136, 154)
+    # The wordmark's own ink, sampled off title.png - a flat (137, 155, 175) -
+    # lifted a shade so it reads as lighter than DIM rather than just bluer.
+    # Carries the artist line, which is secondary text but shouldn't be grey.
+    STEEL = (156, 176, 202)
     CARD = (28, 30, 44)
     GREEN = (30, 215, 96)
     AMBER = (235, 170, 60)
@@ -703,12 +707,12 @@ def main():
             text_y = 250
             if cur:
                 name_img = track_font.render(fit_text(track_font, cur["name"], 300), True, TEXT)
-                artist_img = artist_font.render(fit_text(artist_font, cur["artist"], 300), True, DIM)
+                artist_img = artist_font.render(fit_text(artist_font, cur["artist"], 300), True, STEEL)
                 screen.blit(name_img, (W // 2 - name_img.get_width() // 2, text_y))
                 screen.blit(artist_img, (W // 2 - artist_img.get_width() // 2,
-                                         text_y + name_img.get_height() + 2))
+                                         text_y + name_img.get_height() + 8))
             else:
-                empty_img = artist_font.render("Nothing Playing", True, DIM)
+                empty_img = artist_font.render("Nothing Playing", True, STEEL)
                 screen.blit(empty_img, (W // 2 - empty_img.get_width() // 2, text_y + 12))
 
             # EQ strip / connection state
