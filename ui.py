@@ -73,7 +73,7 @@ def main():
     # note streak - is gone; the wheel is the only thing in the frame now.
     def build_background():
         surf = pygame.Surface((W, H))
-        top, mid, bottom = (46, 50, 84), (30, 32, 54), (13, 14, 23)
+        top, mid, bottom = (40, 64, 108), (28, 46, 82), (14, 24, 46)
         for y in range(H):
             f = y / H
             a, b, g = (top, mid, f / 0.55) if f < 0.55 else (mid, bottom, (f - 0.55) / 0.45)
@@ -383,11 +383,18 @@ def main():
     # it. Widening the radius alone does that: the flat core still stops at
     # the rim, so the halo doesn't get any hotter where it meets the disc,
     # it just reaches further before it runs out.
+    #
+    # It goes down additively, as light rather than as a coloured film: an
+    # alpha blend drags the background toward the cover's colour, which
+    # dims whichever channel the cover is short on and leaves a ring where
+    # the halo sits over the blue. Adding can only lighten, so the tail
+    # runs out into the background instead of staining it. The falloff
+    # therefore lives in the RGB channels - BLEND_RGB_ADD ignores alpha.
     GLOW_R = 205                # reaches ~135px past the record's rim
     GLOW_FALLOFF = 1.7          # lower = fuller mid-range, longer blend out
 
     def build_glow():
-        N, s = 128, pygame.Surface((128, 128), pygame.SRCALPHA)
+        N, s = 128, pygame.Surface((128, 128))
         c = N / 2.0
         core = (COVER / 2.0) / GLOW_R
         for gy in range(N):
@@ -396,12 +403,12 @@ def main():
                 if d >= 1.0:
                     continue
                 f = 0.0 if d <= core else (d - core) / (1.0 - core)
-                a = int(255 * (1.0 - f) ** GLOW_FALLOFF)
-                s.set_at((gx, gy), (255, 255, 255, a))
+                k = int(255 * (1.0 - f) ** GLOW_FALLOFF)
+                s.set_at((gx, gy), (k, k, k))
         return pygame.transform.smoothscale(s, (GLOW_R * 2, GLOW_R * 2))
 
     _glow_base = build_glow()
-    glow_cache = {}
+    tint_cache = {}
 
     def cover_tint(art):
         # The average colour of a cover is nearly always mud: opposing hues
@@ -440,20 +447,21 @@ def main():
         r, g, b = (ch / best[0] for ch in best[1:])
         col = pygame.Color(int(r), int(g), int(b))
         h, s, _v, _a = col.hsva
-        col.hsva = (h, max(s, 62.0), 94.0, 100.0)
+        # Saturated hard, because the halo is added to a blue field: the
+        # background's own blue fills the hue's weak channels back in, and
+        # a cover tinted to what it should look like lands on screen as
+        # grey haze. This is the colour going in, not the colour read off.
+        col.hsva = (h, max(s, 88.0), 94.0, 100.0)
         return col.r, col.g, col.b
 
-    def glow_surface(track):
+    def glow_tint(track):
         art = track.get("art") if track else None
         key = id(art) if art is not None else None
-        if key not in glow_cache:
-            color = cover_tint(art) if art is not None else (66, 122, 193)
-            if len(glow_cache) > 32:
-                glow_cache.clear()
-            tinted = _glow_base.copy()
-            tinted.fill((*color, 255), special_flags=pygame.BLEND_RGBA_MULT)
-            glow_cache[key] = tinted
-        return glow_cache[key]
+        if key not in tint_cache:
+            if len(tint_cache) > 32:
+                tint_cache.clear()
+            tint_cache[key] = cover_tint(art) if art is not None else (66, 122, 193)
+        return tint_cache[key]
 
     def ease(p):
         return p * p * (3.0 - 2.0 * p)
@@ -598,9 +606,15 @@ def main():
                     items.append((track, slot, 1.0 - pe))
 
         # Centred on the front seat, which is where the playing record sits.
-        glow = glow_surface(cur)
-        glow.set_alpha(int(76 + 44 * energy * (0.5 + 0.5 * math.sin(t * 2.2))))
-        screen.blit(glow, glow.get_rect(center=(CAR_CX, CAR_CY)))
+        # The tint and the breathing intensity fold into one multiply, so
+        # only the colour lookup is cached - the scaled copy is per frame.
+        r, g, b = glow_tint(cur)
+        k = 0.20 + 0.10 * energy * (0.5 + 0.5 * math.sin(t * 2.2))
+        glow = _glow_base.copy()
+        glow.fill((int(r * k), int(g * k), int(b * k)),
+                  special_flags=pygame.BLEND_RGB_MULT)
+        screen.blit(glow, glow.get_rect(center=(CAR_CX, CAR_CY)),
+                    special_flags=pygame.BLEND_RGB_ADD)
 
         for slot, track in car["wheel"].items():
             if track is None and not (slot == 0 or (slot == 1 and prevs is None)):
