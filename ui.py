@@ -375,25 +375,74 @@ def main():
             cover_cache[key] = make_disc(art)
         return cover_cache[key]
 
-    # Ambient glow behind the wheel, tinted with the current cover's colour.
-    _glow_dot = pygame.Surface((64, 64), pygame.SRCALPHA)
-    for gy in range(64):
-        for gx in range(64):
-            d = math.hypot(gx - 31.5, gy - 31.5) / 32.0
-            _glow_dot.set_at((gx, gy), (255, 255, 255, int(120 * max(0.0, 1.0 - d) ** 2.2)))
-    _glow_base = pygame.transform.smoothscale(_glow_dot, (400, 400))
+    # ---------- Cover glow ----------
+    # The playing record radiates its cover's colour. The gradient is flat
+    # across the disc's own footprint - hidden behind it anyway - and falls
+    # off from the rim outward, so what reads on screen is a halo dying away
+    # into the background rather than a wash centred on nothing.
+    GLOW_R = 132                # reaches ~60px past the record's rim
+
+    def build_glow():
+        N, s = 128, pygame.Surface((128, 128), pygame.SRCALPHA)
+        c = N / 2.0
+        core = (COVER / 2.0) / GLOW_R
+        for gy in range(N):
+            for gx in range(N):
+                d = math.hypot(gx - c + 0.5, gy - c + 0.5) / c
+                if d >= 1.0:
+                    continue
+                f = 0.0 if d <= core else (d - core) / (1.0 - core)
+                s.set_at((gx, gy), (255, 255, 255, int(255 * (1.0 - f) ** 2.0)))
+        return pygame.transform.smoothscale(s, (GLOW_R * 2, GLOW_R * 2))
+
+    _glow_base = build_glow()
     glow_cache = {}
+
+    def cover_tint(art):
+        # The average colour of a cover is nearly always mud: opposing hues
+        # cancel out and leave grey. Take the dominant hue instead - bucket
+        # the pixels by hue, weighted by how colourful and how lit each one
+        # is, then average the winning bucket. The result is pushed to a
+        # fixed saturation and brightness so every album radiates at the
+        # same strength, whatever its cover's exposure.
+        small = pygame.transform.smoothscale(art, (32, 32))
+        buckets = [[0.0, 0.0, 0.0, 0.0] for _ in range(12)]   # weight, r, g, b
+        for y in range(32):
+            for x in range(32):
+                r, g, b = small.get_at((x, y))[:3]
+                hi, lo = max(r, g, b), min(r, g, b)
+                if hi < 30:
+                    continue                      # too dark to carry a hue
+                sat = (hi - lo) / hi
+                if sat < 0.12:
+                    continue                      # washed out; reads as grey
+                w = sat * (hi / 255.0)
+                bk = buckets[int(pygame.Color(r, g, b).hsva[0] // 30) % 12]
+                bk[0] += w
+                bk[1] += r * w
+                bk[2] += g * w
+                bk[3] += b * w
+        best = max(buckets, key=lambda bk: bk[0])
+        if best[0] <= 0.0:
+            # Nothing colourful enough to read as a hue - a greyscale or
+            # near-black cover. Glow neutral: forcing saturation here would
+            # invent a colour off a hue that means nothing at this greyness.
+            r, g, b, _ = pygame.transform.average_color(art)
+            col = pygame.Color(int(r), int(g), int(b))
+            h, s, _v, _a = col.hsva
+            col.hsva = (h, min(s, 12.0), 92.0, 100.0)
+            return col.r, col.g, col.b
+        r, g, b = (ch / best[0] for ch in best[1:])
+        col = pygame.Color(int(r), int(g), int(b))
+        h, s, _v, _a = col.hsva
+        col.hsva = (h, max(s, 62.0), 94.0, 100.0)
+        return col.r, col.g, col.b
 
     def glow_surface(track):
         art = track.get("art") if track else None
         key = id(art) if art is not None else None
         if key not in glow_cache:
-            if art is not None:
-                r, g, b, _ = pygame.transform.average_color(art)
-                m = max(r, g, b, 1)
-                color = tuple(min(255, int(c * 210 / m)) for c in (r, g, b))
-            else:
-                color = (66, 122, 193)
+            color = cover_tint(art) if art is not None else (66, 122, 193)
             if len(glow_cache) > 32:
                 glow_cache.clear()
             tinted = _glow_base.copy()
@@ -543,8 +592,9 @@ def main():
                         continue  # matches the live-wheel filter just below
                     items.append((track, slot, 1.0 - pe))
 
+        # Centred on the front seat, which is where the playing record sits.
         glow = glow_surface(cur)
-        glow.set_alpha(int(115 + 55 * energy * (0.5 + 0.5 * math.sin(t * 2.2))))
+        glow.set_alpha(int(120 + 70 * energy * (0.5 + 0.5 * math.sin(t * 2.2))))
         screen.blit(glow, glow.get_rect(center=(CAR_CX, CAR_CY)))
 
         for slot, track in car["wheel"].items():
