@@ -378,9 +378,13 @@ def main():
     # ---------- Cover glow ----------
     # The playing record radiates its cover's colour. The gradient is flat
     # across the disc's own footprint - hidden behind it anyway - and falls
-    # off from the rim outward, so what reads on screen is a halo dying away
-    # into the background rather than a wash centred on nothing.
-    GLOW_R = 132                # reaches ~60px past the record's rim
+    # off from the rim outward over a long tail, so the colour spreads well
+    # clear of the wheel and dissolves into the background with no edge to
+    # it. Widening the radius alone does that: the flat core still stops at
+    # the rim, so the halo doesn't get any hotter where it meets the disc,
+    # it just reaches further before it runs out.
+    GLOW_R = 205                # reaches ~135px past the record's rim
+    GLOW_FALLOFF = 1.7          # lower = fuller mid-range, longer blend out
 
     def build_glow():
         N, s = 128, pygame.Surface((128, 128), pygame.SRCALPHA)
@@ -392,7 +396,8 @@ def main():
                 if d >= 1.0:
                     continue
                 f = 0.0 if d <= core else (d - core) / (1.0 - core)
-                s.set_at((gx, gy), (255, 255, 255, int(255 * (1.0 - f) ** 2.0)))
+                a = int(255 * (1.0 - f) ** GLOW_FALLOFF)
+                s.set_at((gx, gy), (255, 255, 255, a))
         return pygame.transform.smoothscale(s, (GLOW_R * 2, GLOW_R * 2))
 
     _glow_base = build_glow()
@@ -594,7 +599,7 @@ def main():
 
         # Centred on the front seat, which is where the playing record sits.
         glow = glow_surface(cur)
-        glow.set_alpha(int(120 + 70 * energy * (0.5 + 0.5 * math.sin(t * 2.2))))
+        glow.set_alpha(int(76 + 44 * energy * (0.5 + 0.5 * math.sin(t * 2.2))))
         screen.blit(glow, glow.get_rect(center=(CAR_CX, CAR_CY)))
 
         for slot, track in car["wheel"].items():
