@@ -718,16 +718,16 @@ def main():
             # EQ strip / connection state
             eq_base = 348
             if connected:
-                bars, bar_w, gap = 15, 8, 5
+                bars, bar_w, gap = 19, 8, 5
                 x0 = (W - (bars * bar_w + (bars - 1) * gap)) // 2
                 dim = (38, 88, 58)
                 color = tuple(int(dim[i] + (GREEN[i] - dim[i]) * energy) for i in range(3))
                 for i in range(bars):
                     wave = 0.55 * (0.5 + 0.5 * math.sin(eq_t * (2.0 + (i % 5) * 0.55) + i * 0.9))
                     wave += 0.45 * (0.5 + 0.5 * math.sin(eq_t * 3.1 + i * 0.5))
-                    # Tallest bar tops out at eq_base - 42, which leaves 13px
+                    # Tallest bar tops out at eq_base - 46, which leaves 11px
                     # of air under the artist line - enough to read as a gap.
-                    bh = 6 + 36 * wave
+                    bh = 6 + 40 * wave
                     pygame.draw.rect(screen, color, (x0 + i * (bar_w + gap), eq_base - bh, bar_w, bh),
                                      border_radius=3)
                 if energy < 0.85:
