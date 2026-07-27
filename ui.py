@@ -125,6 +125,102 @@ def main():
         surf.blit(pygame.transform.smoothscale(vig, (W, H)), (0, 0),
                   special_flags=pygame.BLEND_RGB_MULT)
 
+        # ---------- Note streak ----------
+        # A ribbon of quavers climbing the right-hand margin, after
+        # background.jpeg but pulled right down: logo blues instead of neon,
+        # seven notes instead of a crowd, and alpha low enough that the
+        # streak settles into the vinyl instead of sitting on top of it.
+        # The spine threads the gap between the carousel's right edge and
+        # the window edge, clearing the header logo above and the status
+        # pills below. Fixed seed: the same arrangement every launch.
+        SPINE = [(470, 532), (487, 470), (496, 400), (500, 330),
+                 (500, 262), (498, 205), (476, 152), (452, 116)]
+
+        def spine_at(t):
+            # Catmull-Rom through SPINE; t runs 0 at the foot to 1 at the tip.
+            n = len(SPINE) - 1
+            f = min(t, 0.9999) * n
+            i = int(f)
+            u = f - i
+            p0, p1 = SPINE[max(i - 1, 0)], SPINE[i]
+            p2, p3 = SPINE[i + 1], SPINE[min(i + 2, n)]
+            return tuple(0.5 * (2 * p1[k] + (p2[k] - p0[k]) * u
+                                + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * u * u
+                                + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * u ** 3)
+                         for k in (0, 1))
+
+        def spine_offset(t, off):
+            # A point off to one side of the spine, along its normal.
+            x, y = spine_at(t)
+            nx, ny = spine_at(min(t + 0.01, 1.0))
+            dx, dy = nx - x, ny - y
+            d = math.hypot(dx, dy) or 1.0
+            w = off * math.sin(math.pi * t)   # pinches shut at both ends
+            return x - dy / d * w, y + dx / d * w
+
+        # Haze first, so the streamers and notes read as lit against it.
+        blob = pygame.Surface((32, 32), pygame.SRCALPHA)
+        for i in range(16, 0, -1):
+            pygame.draw.circle(blob, (*LOGO_BLUES[0], 6), (16, 16), i)
+        for t, size in ((0.08, 150), (0.36, 190), (0.63, 170), (0.88, 120)):
+            g = pygame.transform.smoothscale(blob, (size, size))
+            surf.blit(g, g.get_rect(center=[int(v) for v in spine_at(t)]))
+
+        # Two streamers tracing the ribbon, drawn at 2x and scaled down so
+        # the hairlines come out smooth rather than stair-stepped.
+        sup = pygame.Surface((W * 2, H * 2), pygame.SRCALPHA)
+        for off, col, a in ((-16, LOGO_BLUES[1], 60), (13, LOGO_BLUES[2], 42)):
+            pts = [[v * 2 for v in spine_offset(i / 60.0, off)] for i in range(61)]
+            pygame.draw.lines(sup, (*col, a), False, pts, 3)
+        surf.blit(pygame.transform.smoothscale(sup, (W, H)), (0, 0))
+
+        rng = random.Random(11)
+
+        def note_sprite(size, col, alpha):
+            d = size * 2  # drawn big, halved by rotozoom for antialiasing
+            s = pygame.Surface((d, d), pygame.SRCALPHA)
+            hw, hh, sw = int(d * 0.16), int(d * 0.11), max(2, d // 16)
+            if rng.random() < 0.5:  # single quaver
+                hx, hy, top = int(d * 0.34), int(d * 0.78), int(d * 0.22)
+                pygame.draw.ellipse(s, col, (hx - hw, hy - hh, hw * 2, hh * 2))
+                sx = hx + hw - sw
+                pygame.draw.rect(s, col, (sx, top, sw, hy - top))
+                pygame.draw.polygon(s, col, [                   # flag
+                    (sx + sw, top), (sx + sw + int(d * 0.20), top + int(d * 0.16)),
+                    (sx + sw + int(d * 0.12), top + int(d * 0.36)),
+                    (sx + sw + int(d * 0.05), top + int(d * 0.32)),
+                    (sx + sw + int(d * 0.11), top + int(d * 0.16))])
+            else:  # beamed pair
+                x1, y1, t1 = int(d * 0.26), int(d * 0.80), int(d * 0.30)
+                x2, y2, t2 = int(d * 0.66), int(d * 0.74), int(d * 0.24)
+                for hx, hy in ((x1, y1), (x2, y2)):
+                    pygame.draw.ellipse(s, col, (hx - hw, hy - hh, hw * 2, hh * 2))
+                pygame.draw.rect(s, col, (x1 + hw - sw, t1, sw, y1 - t1))
+                pygame.draw.rect(s, col, (x2 + hw - sw, t2, sw, y2 - t2))
+                pygame.draw.polygon(s, col, [(x1 + hw - sw, t1), (x2 + hw, t2),
+                                             (x2 + hw, t2 + int(d * 0.10)),
+                                             (x1 + hw - sw, t1 + int(d * 0.10))])
+            s = pygame.transform.rotozoom(s, rng.uniform(-26, 26), 0.5)
+            lw, lh = s.get_width() // PIX, s.get_height() // PIX
+            s = pixel_up(pygame.transform.smoothscale(s, (lw, lh)))  # pixelate
+            s.set_alpha(alpha)
+            return s
+
+        # t along the spine, size, sideways nudge, colour, alpha. Big and
+        # dimmest at the foot where the margin is widest, thinning out as
+        # the ribbon climbs past the records.
+        for t, size, off, col, alpha in (
+                (0.02, 34, -4, LOGO_BLUES[1], 78),
+                (0.17, 26, 7, LOGO_BLUES[2], 62),
+                (0.34, 30, -6, LOGO_BLUES[1], 84),
+                (0.50, 21, 8, LOGO_BLUES[3], 54),
+                (0.67, 27, -5, LOGO_BLUES[2], 70),
+                (0.83, 19, 6, LOGO_BLUES[1], 58),
+                (0.96, 15, -3, LOGO_BLUES[3], 46)):
+            img = note_sprite(size, col, alpha)
+            x, y = spine_offset(t, off)
+            surf.blit(img, img.get_rect(center=(int(x), int(y))))
+
         return surf
 
     bg = build_background()
