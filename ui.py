@@ -49,7 +49,6 @@ def main():
     # also sit small in the em (a cap is ~0.45 of the point size, against
     # Relidux's ~0.8), which is why the sizes below look mismatched and
     # aren't: Technoid 20 and Relidux 11 have nearly the same cap height.
-    wordmark_font = load_font("Poppins-Bold.ttf", 26)
     sub_font = load_font("Relidux.otf", 11)
     track_font = load_font("Relidux.otf", 18)
     artist_font = load_font("Relidux.otf", 12)
@@ -57,6 +56,25 @@ def main():
     status_font = load_font("Relidux.otf", 11)
     hint_font = load_font("Relidux.otf", 11)
     alert_font = load_font("TECHNOID.TTF", 21)
+
+    # Technoid's caps fill less than half of its em, which leaves them
+    # looking squashed against how wide they are. Stretch the ink - not the
+    # box - anchored on the baseline: the surface keeps the size the font
+    # gave it, so every blit position and height downstream is unchanged and
+    # only the letters grow. Nearest-neighbour, because the strokes are 1px
+    # and smoothing turns them to grey mush at this size.
+    READOUT_STRETCH = 1.5
+
+    def render_readout(font, text, color):
+        img = font.render(text, True, color)
+        ink = img.get_bounding_rect()
+        if not ink.height:
+            return img
+        tall = pygame.transform.scale(img.subsurface(ink),
+                                      (ink.width, int(ink.height * READOUT_STRETCH)))
+        out = pygame.Surface(img.get_size(), pygame.SRCALPHA)
+        out.blit(tall, (ink.x, ink.bottom - tall.get_height()))
+        return out
 
     TEXT = (238, 240, 246)
     DIM = (132, 136, 154)
@@ -115,7 +133,7 @@ def main():
         pygame.draw.circle(screen, color, (x + 21, cy), int(radius))
         # Upper-cased for Technoid, whose lowercase is a squarish techno set
         # that misreads at label size - the t in "Spotify" comes out as a b.
-        label_img = label_font.render(label.upper(), True, TEXT)
+        label_img = render_readout(label_font, label.upper(), TEXT)
         screen.blit(label_img, (x + 36, y + 6))
         text_img = status_font.render(fit_text(status_font, text, w - 48), True, DIM)
         screen.blit(text_img, (x + 36, y + 8 + label_img.get_height()))
@@ -690,7 +708,7 @@ def main():
                 screen.blit(artist_img, (W // 2 - artist_img.get_width() // 2,
                                          text_y + name_img.get_height() + 2))
             else:
-                empty_img = artist_font.render("Nothing playing", True, DIM)
+                empty_img = artist_font.render("Nothing Playing", True, DIM)
                 screen.blit(empty_img, (W // 2 - empty_img.get_width() // 2, text_y + 12))
 
             # EQ strip / connection state
@@ -707,14 +725,14 @@ def main():
                     pygame.draw.rect(screen, color, (x0 + i * (bar_w + gap), eq_base - bh, bar_w, bh),
                                      border_radius=3)
                 if energy < 0.85:
-                    p_img = alert_font.render("PAUSED", True, (110, 160, 128))
+                    p_img = render_readout(alert_font, "PAUSED", (110, 160, 128))
                     p_img.set_alpha(int(255 * (1.0 - energy / 0.85)))
                     screen.blit(p_img, (W // 2 - p_img.get_width() // 2, eq_base - 48))
             else:
                 flatline_y = eq_base - 12
                 pygame.draw.line(screen, (150, 70, 70), (W // 2 - 110, flatline_y),
                                  (W // 2 + 110, flatline_y), 2)
-                nc_img = alert_font.render("NOT CONNECTED", True, RED)
+                nc_img = render_readout(alert_font, "NOT CONNECTED", RED)
                 nc_img.set_alpha(int(160 + 95 * math.sin(t * 2.5)))
                 screen.blit(nc_img, (W // 2 - nc_img.get_width() // 2, flatline_y - 32))
 
