@@ -4,7 +4,6 @@
 
 import math
 import os
-import random
 import threading
 import time
 
@@ -60,13 +59,6 @@ def main():
     # Centre of the wheel.
     CAR_CX, CAR_CY = W // 2, 168
 
-    # Art-pixel scale: the drift notes are drawn at half resolution and
-    # nearest-scaled back up, for a light pixel-art look.
-    PIX = 2
-
-    def pixel_up(s):
-        return pygame.transform.scale(s, (s.get_width() * PIX, s.get_height() * PIX))
-
     # ---------- Background ----------
     # A plain vertical gradient with the corners pulled down. Everything
     # that used to sit on it - record grooves, the diagonal sheen, the
@@ -95,65 +87,6 @@ def main():
         return surf
 
     bg = build_background()
-
-    # ---------- Drift notes ----------
-    # Pixel quavers lifting off the playing record while music plays. They
-    # used to stream out of the phonograph's bell; with the horn gone they
-    # rise off the top edge of the focused disc instead, swaying and fading
-    # as they climb, and die before they reach the wordmark.
-    NOTE_SOURCE_Y = CAR_CY - 30   # well inside the focused disc, not at its
-    NOTE_DEATH_Y = 62             # rim: the compact window leaves so little
-                                  # sky that starting any higher gives them
-                                  # no climb at all before the header cuts them
-
-    def build_pixel_note(col, pair):
-        if pair:
-            n = pygame.Surface((13, 11), pygame.SRCALPHA)
-            pygame.draw.ellipse(n, col, (0, 7, 5, 4))
-            pygame.draw.ellipse(n, col, (7, 6, 5, 4))
-            pygame.draw.rect(n, col, (4, 1, 1, 8))
-            pygame.draw.rect(n, col, (11, 0, 1, 8))
-            pygame.draw.polygon(n, col, [(4, 1), (12, 0), (12, 2), (4, 3)])
-        else:
-            n = pygame.Surface((9, 12), pygame.SRCALPHA)
-            pygame.draw.ellipse(n, col, (0, 8, 5, 4))
-            pygame.draw.rect(n, col, (4, 1, 1, 9))
-            pygame.draw.lines(n, col, False, [(5, 1), (7, 3), (6, 6)], 1)
-        return pixel_up(n)
-
-    drift_note_sprites = [build_pixel_note(c, p)
-                          for c in ((255, 214, 130), (150, 196, 255), (238, 240, 252))
-                          for p in (False, True)]
-    drift_notes = []
-    drift_note_next = [0.0]  # next spawn time; a list so the closure can write it
-
-    def draw_drift_notes(now, dt, playing):
-        if playing and now >= drift_note_next[0]:
-            drift_notes.append({
-                "x": CAR_CX + random.uniform(-60.0, 60.0),
-                "y": NOTE_SOURCE_Y + random.uniform(-3.0, 3.0),
-                "vx": random.uniform(-11.0, 11.0),
-                "rise": random.uniform(26.0, 40.0),
-                "sway": random.uniform(2.0, 5.0),
-                "phase": random.uniform(0.0, math.tau),
-                "life": random.uniform(2.0, 2.8),
-                "age": 0.0,
-                "img": random.choice(drift_note_sprites),
-            })
-            drift_note_next[0] = now + random.uniform(1.0, 2.1)
-        for note in drift_notes[:]:
-            note["age"] += dt
-            note["x"] += note["vx"] * dt
-            note["y"] -= note["rise"] * dt
-            p = note["age"] / note["life"]
-            if p >= 1.0 or note["y"] < NOTE_DEATH_Y:
-                drift_notes.remove(note)
-                continue
-            x = note["x"] + note["sway"] * math.sin(now * 2.2 + note["phase"])
-            img = note["img"]
-            img.set_alpha(int(235 * min(1.0, p * 5.0) * (1.0 - p)
-                          * min(1.0, (note["y"] - NOTE_DEATH_Y) / 26.0)))
-            screen.blit(img, img.get_rect(center=(int(x), int(note["y"]))))
 
     def fit_text(font, text, max_width):
         if font.size(text)[0] <= max_width:
@@ -736,7 +669,6 @@ def main():
             # straight off the vinyl, centred on the window under the
             # wheel, in the same light ink as the rest of the UI.
             cur = draw_carousel(now, status, t, energy, spin_deg)
-            draw_drift_notes(now, dt, status["playing"])
             text_y = 250
             if cur:
                 name_img = track_font.render(fit_text(track_font, cur["name"], 300), True, TEXT)
