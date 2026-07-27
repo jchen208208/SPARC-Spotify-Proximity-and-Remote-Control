@@ -725,13 +725,19 @@ def main():
                 for i in range(bars):
                     wave = 0.55 * (0.5 + 0.5 * math.sin(eq_t * (2.0 + (i % 5) * 0.55) + i * 0.9))
                     wave += 0.45 * (0.5 + 0.5 * math.sin(eq_t * 3.1 + i * 0.5))
-                    bh = 5 + 24 * wave
+                    # Tallest bar tops out at eq_base - 42, which leaves 13px
+                    # of air under the artist line - enough to read as a gap.
+                    bh = 6 + 36 * wave
                     pygame.draw.rect(screen, color, (x0 + i * (bar_w + gap), eq_base - bh, bar_w, bh),
                                      border_radius=3)
                 if energy < 0.85:
-                    p_img = render_readout(alert_font, "PAUSED", (110, 160, 128))
+                    # Sits on the strip rather than above it: there's no sky
+                    # left up there now, and eq_t stops advancing as energy
+                    # decays, so the bars freeze dark and pale ink reads
+                    # cleanly over both them and the background between.
+                    p_img = render_readout(alert_font, "PAUSED", (206, 232, 214))
                     p_img.set_alpha(int(255 * (1.0 - energy / 0.85)))
-                    screen.blit(p_img, (W // 2 - p_img.get_width() // 2, eq_base - 48))
+                    screen.blit(p_img, p_img.get_rect(center=(W // 2, eq_base - 21)))
             else:
                 flatline_y = eq_base - 12
                 pygame.draw.line(screen, (150, 70, 70), (W // 2 - 110, flatline_y),
