@@ -15,7 +15,7 @@ from core import ASSET_DIR, LAST_ACTION, run_worker
 
 def main():
     pygame.init()
-    W, H = 520, 660
+    W, H = 520, 430
     logo = None
     title = None
     try:
@@ -32,7 +32,7 @@ def main():
     pygame.display.set_caption("SPARC Controller")
     if logo:
         logo = logo.convert_alpha()
-        logo = pygame.transform.smoothscale(logo, (int(50 * logo.get_width() / logo.get_height()), 50))
+        logo = pygame.transform.smoothscale(logo, (int(42 * logo.get_width() / logo.get_height()), 42))
 
     def load_font(filename, size):
         try:
@@ -57,64 +57,31 @@ def main():
     STATE_COLORS = {"ok": GREEN, "wait": RED, "err": RED}
     LOGO_BLUES = [(26, 54, 93), (37, 84, 146), (66, 122, 193), (120, 170, 220)]
 
-    # Centre of the platter. Lives up here because the background's grooves
-    # are drawn around it too - the window is meant to read as one big record
-    # with the carousel sitting on its spindle.
-    CAR_CX, CAR_CY = W // 2, 262
+    # Centre of the wheel.
+    CAR_CX, CAR_CY = W // 2, 168
 
-    # Art-pixel scale: the phonograph, the music notes, and the vinyl
-    # texture are drawn at half resolution and nearest-scaled back up, for
-    # the light pixel-art look of the reference images in SPARC_assets.
+    # Art-pixel scale: the drift notes are drawn at half resolution and
+    # nearest-scaled back up, for a light pixel-art look.
     PIX = 2
 
     def pixel_up(s):
         return pygame.transform.scale(s, (s.get_width() * PIX, s.get_height() * PIX))
 
     # ---------- Background ----------
-    # The vinyl itself, seen up close: a deep three-stop gradient, concentric
-    # grooves around the spindle, and a diagonal sheen where light catches the
-    # surface. Built once at 2x and downscaled so the groove rings come out
-    # smooth instead of stair-stepped.
+    # A plain vertical gradient with the corners pulled down. Everything
+    # that used to sit on it - record grooves, the diagonal sheen, the
+    # note streak - is gone; the wheel is the only thing in the frame now.
     def build_background():
-        S = 2
-        surf = pygame.Surface((W * S, H * S))
+        surf = pygame.Surface((W, H))
         top, mid, bottom = (46, 50, 84), (30, 32, 54), (13, 14, 23)
-        for y in range(H * S):
-            f = y / (H * S)
+        for y in range(H):
+            f = y / H
             a, b, g = (top, mid, f / 0.55) if f < 0.55 else (mid, bottom, (f - 0.55) / 0.45)
             color = tuple(int(a[i] + (b[i] - a[i]) * g) for i in range(3))
-            pygame.draw.line(surf, color, (0, y), (W * S, y))
-
-        # Grooves: evenly spaced like a real record, fading out as they run
-        # off toward the corners. Alternating brightness gives the surface a
-        # bit of tooth without turning into a moiré pattern.
-        cx, cy = CAR_CX * S, CAR_CY * S
-        corner = math.hypot(max(cx, W * S - cx), max(cy, H * S - cy))
-        r, i = int(30 * S), 0
-        while r < corner:
-            fade = 1.0 - (r / corner) ** 1.7
-            k = (7.0 if i % 2 else 11.0) * fade
-            pygame.draw.circle(surf, (int(70 * k / 11), int(74 * k / 11), int(96 * k / 11)),
-                               (cx, cy), r, width=S)
-            r += int(10 * S)
-            i += 1
-
-        # Sheen: a soft diagonal band, added rather than blended so it only
-        # ever lifts the surface it crosses.
-        sheen = pygame.Surface((W * S, H * S))
-        band = int(W * S * 0.6)
-        for x in range(band):
-            w = math.sin(math.pi * x / band) ** 2
-            pygame.draw.line(sheen, (int(15 * w), int(19 * w), int(28 * w)),
-                             (x, 0), (x, H * S))
-        sheen = pygame.transform.rotate(sheen, -28)
-        surf.blit(sheen, sheen.get_rect(center=(W * S // 2, H * S // 2)),
-                  special_flags=pygame.BLEND_RGB_ADD)
-
-        surf = pygame.transform.smoothscale(surf, (W, H))
+            pygame.draw.line(surf, color, (0, y), (W, y))
 
         # Vignette, built small and scaled up - a per-pixel loop at full size
-        # would cost seconds. Pulls the corners down so the platter reads as
+        # would cost seconds. Pulls the corners down so the wheel reads as
         # the lit part of the frame.
         vig = pygame.Surface((64, 64))
         for y in range(64):
@@ -125,102 +92,6 @@ def main():
         surf.blit(pygame.transform.smoothscale(vig, (W, H)), (0, 0),
                   special_flags=pygame.BLEND_RGB_MULT)
 
-        # ---------- Note streak ----------
-        # A ribbon of quavers climbing the right-hand margin, after
-        # background.jpeg but pulled right down: logo blues instead of neon,
-        # seven notes instead of a crowd, and alpha low enough that the
-        # streak settles into the vinyl instead of sitting on top of it.
-        # The spine threads the gap between the carousel's right edge and
-        # the window edge, clearing the header logo above and the status
-        # pills below. Fixed seed: the same arrangement every launch.
-        SPINE = [(470, 532), (487, 470), (496, 400), (500, 330),
-                 (500, 262), (498, 205), (476, 152), (452, 116)]
-
-        def spine_at(t):
-            # Catmull-Rom through SPINE; t runs 0 at the foot to 1 at the tip.
-            n = len(SPINE) - 1
-            f = min(t, 0.9999) * n
-            i = int(f)
-            u = f - i
-            p0, p1 = SPINE[max(i - 1, 0)], SPINE[i]
-            p2, p3 = SPINE[i + 1], SPINE[min(i + 2, n)]
-            return tuple(0.5 * (2 * p1[k] + (p2[k] - p0[k]) * u
-                                + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * u * u
-                                + (-p0[k] + 3 * p1[k] - 3 * p2[k] + p3[k]) * u ** 3)
-                         for k in (0, 1))
-
-        def spine_offset(t, off):
-            # A point off to one side of the spine, along its normal.
-            x, y = spine_at(t)
-            nx, ny = spine_at(min(t + 0.01, 1.0))
-            dx, dy = nx - x, ny - y
-            d = math.hypot(dx, dy) or 1.0
-            w = off * math.sin(math.pi * t)   # pinches shut at both ends
-            return x - dy / d * w, y + dx / d * w
-
-        # Haze first, so the streamers and notes read as lit against it.
-        blob = pygame.Surface((32, 32), pygame.SRCALPHA)
-        for i in range(16, 0, -1):
-            pygame.draw.circle(blob, (*LOGO_BLUES[0], 6), (16, 16), i)
-        for t, size in ((0.08, 150), (0.36, 190), (0.63, 170), (0.88, 120)):
-            g = pygame.transform.smoothscale(blob, (size, size))
-            surf.blit(g, g.get_rect(center=[int(v) for v in spine_at(t)]))
-
-        # Two streamers tracing the ribbon, drawn at 2x and scaled down so
-        # the hairlines come out smooth rather than stair-stepped.
-        sup = pygame.Surface((W * 2, H * 2), pygame.SRCALPHA)
-        for off, col, a in ((-16, LOGO_BLUES[1], 60), (13, LOGO_BLUES[2], 42)):
-            pts = [[v * 2 for v in spine_offset(i / 60.0, off)] for i in range(61)]
-            pygame.draw.lines(sup, (*col, a), False, pts, 3)
-        surf.blit(pygame.transform.smoothscale(sup, (W, H)), (0, 0))
-
-        rng = random.Random(11)
-
-        def note_sprite(size, col, alpha):
-            d = size * 2  # drawn big, halved by rotozoom for antialiasing
-            s = pygame.Surface((d, d), pygame.SRCALPHA)
-            hw, hh, sw = int(d * 0.16), int(d * 0.11), max(2, d // 16)
-            if rng.random() < 0.5:  # single quaver
-                hx, hy, top = int(d * 0.34), int(d * 0.78), int(d * 0.22)
-                pygame.draw.ellipse(s, col, (hx - hw, hy - hh, hw * 2, hh * 2))
-                sx = hx + hw - sw
-                pygame.draw.rect(s, col, (sx, top, sw, hy - top))
-                pygame.draw.polygon(s, col, [                   # flag
-                    (sx + sw, top), (sx + sw + int(d * 0.20), top + int(d * 0.16)),
-                    (sx + sw + int(d * 0.12), top + int(d * 0.36)),
-                    (sx + sw + int(d * 0.05), top + int(d * 0.32)),
-                    (sx + sw + int(d * 0.11), top + int(d * 0.16))])
-            else:  # beamed pair
-                x1, y1, t1 = int(d * 0.26), int(d * 0.80), int(d * 0.30)
-                x2, y2, t2 = int(d * 0.66), int(d * 0.74), int(d * 0.24)
-                for hx, hy in ((x1, y1), (x2, y2)):
-                    pygame.draw.ellipse(s, col, (hx - hw, hy - hh, hw * 2, hh * 2))
-                pygame.draw.rect(s, col, (x1 + hw - sw, t1, sw, y1 - t1))
-                pygame.draw.rect(s, col, (x2 + hw - sw, t2, sw, y2 - t2))
-                pygame.draw.polygon(s, col, [(x1 + hw - sw, t1), (x2 + hw, t2),
-                                             (x2 + hw, t2 + int(d * 0.10)),
-                                             (x1 + hw - sw, t1 + int(d * 0.10))])
-            s = pygame.transform.rotozoom(s, rng.uniform(-26, 26), 0.5)
-            lw, lh = s.get_width() // PIX, s.get_height() // PIX
-            s = pixel_up(pygame.transform.smoothscale(s, (lw, lh)))  # pixelate
-            s.set_alpha(alpha)
-            return s
-
-        # t along the spine, size, sideways nudge, colour, alpha. Big and
-        # dimmest at the foot where the margin is widest, thinning out as
-        # the ribbon climbs past the records.
-        for t, size, off, col, alpha in (
-                (0.02, 34, -4, LOGO_BLUES[1], 78),
-                (0.17, 26, 7, LOGO_BLUES[2], 62),
-                (0.34, 30, -6, LOGO_BLUES[1], 84),
-                (0.50, 21, 8, LOGO_BLUES[3], 54),
-                (0.67, 27, -5, LOGO_BLUES[2], 70),
-                (0.83, 19, 6, LOGO_BLUES[1], 58),
-                (0.96, 15, -3, LOGO_BLUES[3], 46)):
-            img = note_sprite(size, col, alpha)
-            x, y = spine_offset(t, off)
-            surf.blit(img, img.get_rect(center=(int(x), int(y))))
-
         return surf
 
     bg = build_background()
@@ -230,7 +101,10 @@ def main():
     # used to stream out of the phonograph's bell; with the horn gone they
     # rise off the top edge of the focused disc instead, swaying and fading
     # as they climb, and die before they reach the wordmark.
-    NOTE_SOURCE_Y = 171   # just inside the focused disc's top edge
+    NOTE_SOURCE_Y = CAR_CY - 30   # well inside the focused disc, not at its
+    NOTE_DEATH_Y = 62             # rim: the compact window leaves so little
+                                  # sky that starting any higher gives them
+                                  # no climb at all before the header cuts them
 
     def build_pixel_note(col, pair):
         if pair:
@@ -256,7 +130,7 @@ def main():
     def draw_drift_notes(now, dt, playing):
         if playing and now >= drift_note_next[0]:
             drift_notes.append({
-                "x": CAR_CX + random.uniform(-72.0, 72.0),
+                "x": CAR_CX + random.uniform(-60.0, 60.0),
                 "y": NOTE_SOURCE_Y + random.uniform(-3.0, 3.0),
                 "vx": random.uniform(-11.0, 11.0),
                 "rise": random.uniform(26.0, 40.0),
@@ -272,62 +146,14 @@ def main():
             note["x"] += note["vx"] * dt
             note["y"] -= note["rise"] * dt
             p = note["age"] / note["life"]
-            if p >= 1.0 or note["y"] < 84:
+            if p >= 1.0 or note["y"] < NOTE_DEATH_Y:
                 drift_notes.remove(note)
                 continue
             x = note["x"] + note["sway"] * math.sin(now * 2.2 + note["phase"])
             img = note["img"]
             img.set_alpha(int(235 * min(1.0, p * 5.0) * (1.0 - p)
-                          * min(1.0, (note["y"] - 84.0) / 26.0)))
+                          * min(1.0, (note["y"] - NOTE_DEATH_Y) / 26.0)))
             screen.blit(img, img.get_rect(center=(int(x), int(note["y"]))))
-
-    # ---------- Sparks ----------
-    # The other half of the name: embers lifting off the record and drifting
-    # up the frame. They idle when paused and pick up with the music, so the
-    # window breathes along with the platter.
-    # Weighted warm - embers off the record, not a starfield. The one cool
-    # tint keeps them tied to the logo blues.
-    SPARK_TINTS = [(255, 176, 84), (255, 202, 118), (255, 228, 176), (140, 182, 230)]
-
-    def make_spark(radius, color):
-        d = radius * 2
-        s = pygame.Surface((d, d), pygame.SRCALPHA)
-        for y in range(d):
-            for x in range(d):
-                dist = math.hypot(x - radius + 0.5, y - radius + 0.5) / radius
-                a = int(255 * max(0.0, 1.0 - dist) ** 2.4)
-                if a:
-                    s.set_at((x, y), (*color, a))
-        return s
-
-    spark_sprites = [make_spark(r, c) for c in SPARK_TINTS for r in (4, 7, 10)]
-    sparks = []
-    for _ in range(46):
-        sparks.append({
-            "x": random.uniform(0, W),
-            "y": random.uniform(0, H),
-            "sprite": random.choice(spark_sprites),
-            "rise": random.uniform(7.0, 26.0),      # px/sec at full energy
-            "sway": random.uniform(6.0, 20.0),
-            "rate": random.uniform(0.4, 1.3),       # sway + twinkle speed
-            "phase": random.uniform(0.0, math.tau),
-            "peak": random.uniform(0.30, 1.0),      # brightest this one gets
-        })
-
-    def draw_sparks(t, dt, energy):
-        # 0.28 keeps a slow drift alive while paused so the frame never goes
-        # completely static.
-        lift = 0.28 + 0.72 * energy
-        for sp in sparks:
-            sp["y"] -= sp["rise"] * lift * dt
-            if sp["y"] < -12:
-                sp["y"] = H + 12
-                sp["x"] = random.uniform(0, W)
-            x = sp["x"] + sp["sway"] * math.sin(t * sp["rate"] + sp["phase"])
-            twinkle = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(t * sp["rate"] * 2.3 + sp["phase"]))
-            img = sp["sprite"]
-            img.set_alpha(int(150 * sp["peak"] * twinkle * lift))
-            screen.blit(img, img.get_rect(center=(int(x), int(sp["y"]))))
 
     def fit_text(font, text, max_width):
         if font.size(text)[0] <= max_width:
@@ -363,13 +189,15 @@ def main():
     # that assumption, so it's handled as its own case: no spin, just a
     # crossfade from the old cover to whatever's actually there now. See
     # _classify_transition.
-    COVER = 195                 # on-screen size of the focused cover
+    COVER = 140                 # on-screen size of the focused cover
     COVER_BASE = 300            # cached surface size (art is fetched at ~300px)
     RING_SEATS = 11             # one seat per wheel slot; the ring never
                                 # shrinks when slots are empty, so neighbouring
                                 # records always overlap by the same sliver
-    R_X = 175                   # ring horizontal radius on screen, in px
-    E_Y = 55                    # ring vertical half-height: the circle seen at
+    R_X = 126                   # ring horizontal radius on screen, in px. Scales
+                                # with COVER - hold it fixed while the discs
+                                # shrink and the ring opens up gaps between them
+    E_Y = 40                    # ring vertical half-height: the circle seen at
                                 # a shallow bird's-eye tilt becomes this ellipse
     KS = 2.8                    # size falloff with depth
     WHEEL_DUR = 0.65
@@ -553,7 +381,7 @@ def main():
         for gx in range(64):
             d = math.hypot(gx - 31.5, gy - 31.5) / 32.0
             _glow_dot.set_at((gx, gy), (255, 255, 255, int(120 * max(0.0, 1.0 - d) ** 2.2)))
-    _glow_base = pygame.transform.smoothscale(_glow_dot, (560, 560))
+    _glow_base = pygame.transform.smoothscale(_glow_dot, (400, 400))
     glow_cache = {}
 
     def glow_surface(track):
@@ -817,31 +645,30 @@ def main():
             spin_deg = (spin_deg + dt * SPIN_DPS * energy) % 360.0
 
             screen.blit(bg, (0, 0))
-            draw_sparks(t, dt, energy)
 
             # Header
             for i, blue in enumerate(LOGO_BLUES):
                 bh = 10 + 14 * (0.5 + 0.5 * math.sin(t * (1.6 + 0.5 * i) + i * 1.3))
-                pygame.draw.rect(screen, blue, (26 + i * 9, 60 - bh, 6, bh), border_radius=2)
+                pygame.draw.rect(screen, blue, (26 + i * 9, 52 - bh, 6, bh), border_radius=2)
             try:
                 title = pygame.image.load(os.path.join(ASSET_DIR, "title.png"))
             except Exception as e:
                 print(f"  Title error: {e}")
             sub_img = sub_font.render("Spotify Proximity and Remote Control", True, DIM)
-            screen.blit(sub_img, (70, 52))
+            screen.blit(sub_img, (70, 44))
             if logo:
-                screen.blit(logo, (W - 24 - logo.get_width(), 20))
+                screen.blit(logo, (W - 24 - logo.get_width(), 16))
             if title:
                 title = title.convert_alpha()
                 title = pygame.transform.smoothscale(title, (int(24 * title.get_width() / title.get_height()), 24))
-                screen.blit(title, (67, 28))
+                screen.blit(title, (67, 20))
             # Cover wheel + track text. The text used to sit on the
             # phonograph's gold plate; with the cabinet gone it reads
             # straight off the vinyl, centred on the window under the
             # wheel, in the same light ink as the rest of the UI.
             cur = draw_carousel(now, status, t, energy, spin_deg)
             draw_drift_notes(now, dt, status["playing"])
-            text_y = 402
+            text_y = 250
             if cur:
                 name_img = track_font.render(fit_text(track_font, cur["name"], 300), True, TEXT)
                 artist_img = artist_font.render(fit_text(artist_font, cur["artist"], 300), True, DIM)
@@ -853,7 +680,7 @@ def main():
                 screen.blit(empty_img, (W // 2 - empty_img.get_width() // 2, text_y + 12))
 
             # EQ strip / connection state
-            eq_base = 516
+            eq_base = 348
             if connected:
                 bars, bar_w, gap = 15, 8, 5
                 x0 = (W - (bars * bar_w + (bars - 1) * gap)) // 2
@@ -925,12 +752,12 @@ def main():
 
             # Status pills
             pill_w = (W - 48 - 12) // 2
-            draw_pill(24, 560, pill_w, 46, "Spotify", status["spotify"], status["spotify_state"], t)
-            draw_pill(24 + pill_w + 12, 560, pill_w, 46, "SPARC",
+            draw_pill(24, 356, pill_w, 46, "Spotify", status["spotify"], status["spotify_state"], t)
+            draw_pill(24 + pill_w + 12, 356, pill_w, 46, "SPARC",
                       status["arduino"], status["arduino_state"], t)
 
             hint_img = hint_font.render("Close this window to quit", True, (104, 106, 120))
-            screen.blit(hint_img, (W // 2 - hint_img.get_width() // 2, H - 28))
+            screen.blit(hint_img, (W // 2 - hint_img.get_width() // 2, H - 24))
 
             pygame.display.flip()
             clock.tick(60)
