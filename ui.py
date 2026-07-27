@@ -225,285 +225,12 @@ def main():
 
     bg = build_background()
 
-    def build_horn():
-        # The whole horn - bell, curved golden stem, and the support
-        # bracket that holds it up - on its own layer: draw_carousel
-        # blits it after the small back-row records but before the front
-        # row, so the stem dives behind the current record and the one to
-        # its left, and re-emerges below them at the elbow and needle.
-        # Pixel-art after the phonograph references: gold bell,
-        # leaning to the left - rings shift left-and-down as they shrink,
-        # so the mouth sits off-centre in the rim - with the whole head
-        # swung ~30 deg to the right about the mouth.
-        HW, HH = 100, 155               # art px; 200x310 on screen
-        s = pygame.Surface((HW, HH), pygame.SRCALPHA)
-        cx, cy = 63, 23                 # bell rim centre -> screen (261, 124)
-        brx, bry = 33, 20
-        tx, ty = -8, 5                  # full rim-to-mouth lean
-
-        def ring(f):
-            return cx + (1.0 - f) * tx, cy + (1.0 - f) * ty
-
-        OUT = (40, 28, 16)
-        # Stem: golden tube joining the trumpet's head high on its
-        # lower-left rim - above the records, so the joint stays visible
-        # - one constant-curvature circular arc, no straight runs: it
-        # bulges out to the left and curls back in at the bottom
-        # (phonograph1's C-shaped neck), where the grey elbow finishes
-        # the turn to the ball joint. Tube edges ride the arc's normals
-        # so the width holds through the bend.
-        scx, scy, sr = 84.4, 94, 71     # arc centre + radius
-        th0, th1 = math.radians(120.8), math.radians(214)  # rim -> foot
-        spine = []
-        for i in range(17):
-            t = i / 16.0
-            th = th0 + t * (th1 - th0)
-            spine.append((scx + sr * math.cos(th), scy - sr * math.sin(th),
-                          7.0 - 3.5 * t, -math.cos(th), math.sin(th)))
-
-        def tube(o):        # both flanks, widened by o along the normals
-            return ([(x - (w + o) * nx, y - (w + o) * ny)
-                     for x, y, w, nx, ny in spine] +
-                    [(x + (w + o) * nx, y + (w + o) * ny)
-                     for x, y, w, nx, ny in spine][::-1])
-
-        # Dark silhouette first, gold filled inside it - never fill a
-        # path and then stroke that same path, which is what spilled
-        # gold outside the stem's outline: pygame's scanline fill and
-        # its line rasteriser disagree by up to a pixel on a slanted
-        # edge. A widened silhouette alone still leaves the rim a pixel
-        # short wherever the flank runs near 45 deg, so it gets a
-        # stroke just inside its edge to close those gaps.
-        pygame.draw.polygon(s, OUT, tube(1.2))
-        pygame.draw.lines(s, OUT, True, tube(0.6), 3)
-        pygame.draw.polygon(s, (168, 132, 74), tube(0.0))
-        pygame.draw.lines(s, (214, 176, 106), False,
-                          [(x - (w - 2) * nx, y - (w - 2) * ny)
-                           for x, y, w, nx, ny in spine], 1)
-        # grey metal elbow: picks the stem's curl up at its tilted foot
-        # - SEAM is the angle round the elbow where the two meet, set so
-        # the tangents match - and carries it to horizontal, then a stub
-        # run right to the ball. Sits low and left enough that the ball
-        # and needle clear the focused record drawn over the horn.
-        ecx, ecy, SEAM = 31, 130, math.radians(146)
-        bend = [math.pi / 2 + (SEAM - math.pi / 2) * i / 10 for i in range(11)]
-
-        def ring_at(r):
-            return [(ecx + r * math.cos(a), ecy + r * math.sin(a)) for a in bend]
-
-        pygame.draw.polygon(s, OUT, ring_at(11) + ring_at(3)[::-1])
-        pygame.draw.lines(s, OUT, True, ring_at(10.4) + ring_at(3.6)[::-1], 3)
-        pygame.draw.polygon(s, (150, 150, 158), ring_at(10) + ring_at(4)[::-1])
-        pygame.draw.lines(s, (200, 202, 210), False, ring_at(8), 1)
-        pygame.draw.rect(s, OUT, (31, 133, 5, 9))              # run to ball,
-        pygame.draw.rect(s, (150, 150, 158), (31, 134, 4, 7))  # flush with the
-        pygame.draw.line(s, (200, 202, 210), (31, 135), (33, 135), 1)  # bend
-        # socket band clamped over the tilted gold-to-grey seam: wider
-        # than the tube across it, short along its axis
-        su = (math.cos(SEAM), math.sin(SEAM))
-        sv = (-su[1], su[0])
-        smx, smy = ecx + 7 * su[0], ecy + 7 * su[1]
-
-        def band(across, along):
-            return [(smx + p * su[0] + q * sv[0], smy + p * su[1] + q * sv[1])
-                    for p, q in ((across, along), (across, -along),
-                                 (-across, -along), (-across, along))]
-
-        pygame.draw.polygon(s, OUT, band(5.5, 3.5))
-        pygame.draw.polygon(s, (150, 150, 158), band(4.5, 2.5))
-        # Support bracket (phonograph1, mirrored): reads as a "[" - the
-        # top arm clamps the golden stem just above the grey elbow, the
-        # post drops down clear of the box's left flank, and the cabinet
-        # layer runs a bottom arm right into the box's hidden left face
-        # - holding the trumpet off the side of the box.
-        BAR = (124, 110, 72)
-        pygame.draw.rect(s, BAR, (1, 107, 6, HH - 107))        # post
-        pygame.draw.rect(s, OUT, (1, 107, 6, HH - 107), 1)
-        pygame.draw.rect(s, BAR, (6, 107, 8, 6))               # top arm
-        pygame.draw.line(s, OUT, (1, 107), (13, 107), 1)
-        pygame.draw.line(s, OUT, (6, 112), (13, 112), 1)
-        pygame.draw.line(s, (158, 142, 96), (2, 108), (2, HH - 1), 1)
-        pygame.draw.rect(s, (188, 150, 86), (10, 106, 11, 8))  # stem clamp
-        pygame.draw.rect(s, OUT, (10, 106, 11, 8), 1)
-        # black ball joint capping the run's right end - out of the
-        # tube's mouth, not hanging under it - with the needle pin
-        # dropping from its underside to the cabinet layer, which
-        # continues it onto the record
-        pygame.draw.ellipse(s, (20, 16, 13), (34, 133, 8, 8))
-        pygame.draw.ellipse(s, OUT, (34, 133, 8, 8), 1)
-        s.set_at((36, 135), (92, 84, 76))                      # ball highlight
-        s.set_at((37, 135), (68, 62, 55))
-        pygame.draw.rect(s, (150, 150, 158), (37, 140, 2, 6))  # pin, top half
-        pygame.draw.line(s, (96, 94, 104), (38, 140), (38, 145), 1)
-        # Bell: outlined rim, gold deepening toward the throat, swung
-        # ~30 deg right about the mouth so the head bends right while
-        # the neck stays put and notes keep spawning from the same spot.
-        # Every ring is drawn already-swung, as a rotated-ellipse
-        # polygon - running an upright bell through transform.rotate
-        # resampled it, fraying the rim's outline into loose pixels and
-        # leaving gold sitting outside its own line.
-        mrx, mry = ring(0.28)                       # the mouth, and the pivot
-        bca, bsa = math.cos(math.radians(30)), math.sin(math.radians(30))
-
-        def swung(px, py):
-            dx, dy = px - mrx, py - mry
-            return (mrx + dx * bca - dy * bsa, mry + dx * bsa + dy * bca)
-
-        def swung_ring(c, rw, rh, n=48):
-            return [swung(c[0] + rw * math.cos(a), c[1] + rh * math.sin(a))
-                    for a in (math.tau * k / n for k in range(n))]
-
-        pygame.draw.polygon(s, OUT, swung_ring((cx, cy), brx + 1.5, bry + 1.5))
-        for f, col in ((1.0, (212, 174, 104)), (0.86, (188, 150, 86)),
-                       (0.68, (156, 120, 66)), (0.50, (122, 92, 50)),
-                       (0.34, (92, 68, 38))):
-            pygame.draw.polygon(s, col, swung_ring(ring(f), brx * f, bry * f))
-        for k in range(8):              # petal seams
-            a = math.tau * (k + 0.5) / 8.0
-            x1, y1 = ring(0.46)
-            x2, y2 = ring(0.96)
-            pygame.draw.line(s, (162, 128, 70),
-                             swung(x1 + 0.46 * brx * math.cos(a),
-                                   y1 + 0.46 * bry * math.sin(a)),
-                             swung(x2 + 0.96 * brx * math.cos(a),
-                                   y2 + 0.96 * bry * math.sin(a)), 1)
-        mouth = swung_ring((mrx, mry), brx * 0.28, bry * 0.28)
-        pygame.draw.polygon(s, (12, 8, 5), mouth)        # the mouth
-        pygame.draw.polygon(s, (70, 52, 30), mouth, 1)   # throat catch-light
-        pygame.draw.lines(s, (240, 208, 140), False,     # glint on upper rim
-                          [swung(cx + (brx - 2) * math.cos(a),
-                                 cy + (bry - 2) * math.sin(a))
-                           for a in (math.radians(200 + 140 * k / 12)
-                                     for k in range(13))], 2)
-        return pixel_up(s)
-
-    horn = build_horn()
-    # x is even so the horn's 2px art grid lines up with the cabinet's
-    # (blitted at x=128): the support post is drawn on both layers, and
-    # on an odd offset the two halves sat a pixel apart - a visible kink
-    # where the cabinet takes over.
-    horn_pos = (W // 2 - 126, 78)  # bell rim centre lands at (260, 124)
-    HORN_LAYER = 0.65  # discs at least this big draw over the horn (the
-                       # front row); everything smaller sits behind it
-
-    def build_cabinet():
-        # The phonograph's wooden box, on its own foreground layer blitted
-        # AFTER the carousel - baked into the background it sat under the
-        # album-tinted glow, which recoloured it every frame. Redrawn
-        # after the phonograph1 reference: an oblique cabinet - dark
-        # moulded cornice, tan face between dark pilasters, stepped plinth
-        # on blocky feet, the front mirrored around x=60 with depth faces
-        # receding up-and-right - with a big gold title plate the track
-        # text lands on, and a vinyl record lying flat on the lid,
-        # tonearm resting across it. The horn's neck ends above the lid;
-        # only its needle pin drops into the record's centre hole at
-        # x=260. Drawn in art pixels and nearest-scaled up.
-        AW, AH = 128, 56                        # art px; 256x112 on screen
-        s = pygame.Surface((AW, AH), pygame.SRCALPHA)
-        OUT = (30, 20, 15)
-        dx, dy = 12, 11                         # oblique depth, up-and-right
-        pygame.draw.rect(s, (10, 9, 14, 130),   # ground shadow
-                         (6, 51, 118, 5))
-        for fxx in (18, 89):                    # feet
-            pygame.draw.rect(s, (88, 48, 34), (fxx, 52, 14, 4))
-            pygame.draw.rect(s, OUT, (fxx, 52, 14, 4), 1)
-        pygame.draw.polygon(s, (70, 42, 30),    # lower plinth right side
-                            [(112, 49), (124, 38), (124, 41), (112, 52)])
-        pygame.draw.polygon(s, OUT,
-                            [(112, 49), (124, 38), (124, 41), (112, 52)], 1)
-        pygame.draw.rect(s, (96, 58, 40), (8, 49, 105, 4))    # lower plinth
-        pygame.draw.rect(s, OUT, (8, 49, 105, 4), 1)
-        pygame.draw.polygon(s, (84, 52, 34),    # upper plinth right side
-                            [(108, 46), (120, 35), (120, 38), (108, 49)])
-        pygame.draw.polygon(s, OUT,
-                            [(108, 46), (120, 35), (120, 38), (108, 49)], 1)
-        pygame.draw.rect(s, (114, 74, 50), (12, 46, 97, 4))   # upper plinth
-        pygame.draw.rect(s, OUT, (12, 46, 97, 4), 1)
-        pygame.draw.line(s, (158, 104, 70), (13, 47), (107, 47), 1)
-        body_side = [(106, 16), (118, 5), (118, 35), (106, 46)]
-        pygame.draw.polygon(s, (104, 70, 46), body_side)
-        pygame.draw.polygon(s, OUT, body_side, 1)
-        for k in (4, 8):                        # side-face plank seams
-            pygame.draw.line(s, (86, 56, 38),
-                             (106 + k, 16 - k * dy // dx + 2),
-                             (106 + k, 46 - k * dy // dx - 2), 1)
-        # bottom arm of the horn's support bracket, mounted on the box's
-        # hidden left face: drawn before the front face so its right end
-        # disappears behind the body's left edge
-        pygame.draw.rect(s, (124, 110, 72), (4, 24, 13, 6))
-        pygame.draw.line(s, OUT, (9, 24), (16, 24), 1)
-        pygame.draw.line(s, OUT, (4, 29), (16, 29), 1)
-        pygame.draw.rect(s, (182, 142, 100), (14, 16, 93, 30))  # body face
-        pygame.draw.rect(s, OUT, (14, 16, 93, 30), 1)
-        for i, gx in enumerate(range(24, 94, 13)):  # grain dashes
-            pygame.draw.line(s, (206, 166, 120),
-                             (gx, 17 + (i % 2)), (gx + 4, 17 + (i % 2)), 1)
-        for px0 in (14, 102):                   # pilasters
-            pygame.draw.rect(s, (112, 72, 48), (px0, 16, 5, 30))
-            pygame.draw.rect(s, OUT, (px0, 16, 5, 30), 1)
-            pygame.draw.line(s, (150, 100, 66), (px0 + 1, 17), (px0 + 1, 44), 1)
-            for cy2 in (16, 42):                # capitals
-                pygame.draw.rect(s, (96, 60, 42), (px0 - 1, cy2, 7, 4))
-                pygame.draw.rect(s, OUT, (px0 - 1, cy2, 7, 4), 1)
-        # the lid: cornice top face, the record sits on it
-        lid = [(10, 12), (110, 12), (122, 1), (22, 1)]
-        pygame.draw.polygon(s, (196, 154, 108), lid)
-        pygame.draw.polygon(s, OUT, lid, 1)
-        pygame.draw.line(s, (172, 132, 90), (21, 4), (116, 4), 1)  # lid grain
-        pygame.draw.line(s, (172, 132, 90), (15, 9), (112, 9), 1)
-        # the record, flat on the lid and centred on it at art x=66;
-        # grooves, gold label, and the spindle hole the neck drops into
-        pygame.draw.ellipse(s, OUT, (29, 1, 74, 12))             # outline
-        pygame.draw.ellipse(s, (14, 12, 16), (30, 4, 72, 9))     # disc side
-        pygame.draw.ellipse(s, (30, 28, 34), (30, 2, 72, 9))     # disc top
-        pygame.draw.ellipse(s, (54, 52, 60), (40, 4, 52, 5), 1)  # grooves
-        pygame.draw.ellipse(s, (44, 42, 48), (48, 5, 36, 3), 1)
-        pygame.draw.ellipse(s, (200, 160, 92), (56, 3, 20, 7))   # label
-        pygame.draw.ellipse(s, (40, 28, 16), (56, 3, 20, 7), 1)
-        pygame.draw.ellipse(s, (12, 9, 7), (63, 5, 6, 3))        # centre hole
-        # cornice: front strip and right side face, drawn after the
-        # record so the moulding lips over the disc's front rim
-        pygame.draw.polygon(s, (76, 40, 28),
-                            [(110, 12), (122, 1), (122, 5), (110, 16)])
-        pygame.draw.polygon(s, OUT,
-                            [(110, 12), (122, 1), (122, 5), (110, 16)], 1)
-        pygame.draw.rect(s, (104, 56, 40), (10, 12, 101, 5))
-        pygame.draw.rect(s, OUT, (10, 12, 101, 5), 1)
-        pygame.draw.line(s, (150, 92, 66), (11, 13), (109, 13), 1)
-        # the horn's support post, continued from the horn layer: it
-        # runs down past the cornice clear of the box's left flank and
-        # lands on the bracket's bottom arm (drawn earlier, under the
-        # body face, so it reads as mounted on the hidden left side)
-        pygame.draw.rect(s, (124, 110, 72), (4, 0, 6, 24))       # post
-        pygame.draw.line(s, OUT, (4, 0), (4, 29), 1)
-        pygame.draw.line(s, OUT, (9, 0), (9, 23), 1)
-        pygame.draw.line(s, (158, 142, 96), (5, 0), (5, 28), 1)
-        pygame.draw.line(s, (40, 38, 44), (74, 6), (95, 4), 1)   # tonearm
-        pygame.draw.rect(s, (58, 56, 64), (94, 2, 3, 3))         # arm knob
-        pygame.draw.rect(s, OUT, (94, 2, 3, 3), 1)
-        # needle pin: the grey assembly's tip - same steel as the ball
-        # joint it hangs from (horn layer, ending at the cabinet's top
-        # edge) - dropping onto the record's black surface left of the
-        # label; the needle rides the grooves, not the centre
-        pygame.draw.rect(s, (150, 150, 158), (40, 0, 2, 7))
-        pygame.draw.line(s, (96, 94, 104), (41, 0), (41, 6), 1)
-        # the gold plate, sized to the track text: 168-328 x 396-450 on
-        # screen; title + artist render over it, centred at box_cx=248
-        pygame.draw.rect(s, (204, 160, 90), (20, 19, 81, 27))
-        pygame.draw.rect(s, (222, 184, 112), (21, 20, 34, 25))
-        pygame.draw.rect(s, OUT, (20, 19, 81, 27), 1)
-        pygame.draw.line(s, (240, 208, 140), (21, 20), (99, 20), 1)
-        pygame.draw.line(s, (150, 112, 60), (21, 44), (99, 44), 1)
-        return pixel_up(s), (128, 358)
-
-    cabinet, cabinet_pos = build_cabinet()
-
-    # ---------- Horn notes ----------
-    # Pixel quavers drifting out of the trumpet mouth while music plays
-    # (the phonograph2 reference). They ride up and to the left - the way
-    # the bell leans - swaying and fading as they climb, and die before
-    # they reach the wordmark.
-    HORN_MOUTH = (248, 124)
+    # ---------- Drift notes ----------
+    # Pixel quavers lifting off the playing record while music plays. They
+    # used to stream out of the phonograph's bell; with the horn gone they
+    # rise off the top edge of the focused disc instead, swaying and fading
+    # as they climb, and die before they reach the wordmark.
+    NOTE_SOURCE_Y = 171   # just inside the focused disc's top edge
 
     def build_pixel_note(col, pair):
         if pair:
@@ -520,33 +247,33 @@ def main():
             pygame.draw.lines(n, col, False, [(5, 1), (7, 3), (6, 6)], 1)
         return pixel_up(n)
 
-    horn_note_sprites = [build_pixel_note(c, p)
-                         for c in ((255, 214, 130), (150, 196, 255), (238, 240, 252))
-                         for p in (False, True)]
-    horn_notes = []
-    horn_note_next = [0.0]  # next spawn time; a list so the closure can write it
+    drift_note_sprites = [build_pixel_note(c, p)
+                          for c in ((255, 214, 130), (150, 196, 255), (238, 240, 252))
+                          for p in (False, True)]
+    drift_notes = []
+    drift_note_next = [0.0]  # next spawn time; a list so the closure can write it
 
-    def draw_horn_notes(now, dt, playing):
-        if playing and now >= horn_note_next[0]:
-            horn_notes.append({
-                "x": HORN_MOUTH[0] + random.uniform(-5.0, 5.0),
-                "y": HORN_MOUTH[1] + random.uniform(-3.0, 3.0),
-                "vx": random.uniform(-16.0, -6.0),
+    def draw_drift_notes(now, dt, playing):
+        if playing and now >= drift_note_next[0]:
+            drift_notes.append({
+                "x": CAR_CX + random.uniform(-72.0, 72.0),
+                "y": NOTE_SOURCE_Y + random.uniform(-3.0, 3.0),
+                "vx": random.uniform(-11.0, 11.0),
                 "rise": random.uniform(26.0, 40.0),
                 "sway": random.uniform(2.0, 5.0),
                 "phase": random.uniform(0.0, math.tau),
                 "life": random.uniform(2.0, 2.8),
                 "age": 0.0,
-                "img": random.choice(horn_note_sprites),
+                "img": random.choice(drift_note_sprites),
             })
-            horn_note_next[0] = now + random.uniform(1.0, 2.1)
-        for note in horn_notes[:]:
+            drift_note_next[0] = now + random.uniform(1.0, 2.1)
+        for note in drift_notes[:]:
             note["age"] += dt
             note["x"] += note["vx"] * dt
             note["y"] -= note["rise"] * dt
             p = note["age"] / note["life"]
             if p >= 1.0 or note["y"] < 84:
-                horn_notes.remove(note)
+                drift_notes.remove(note)
                 continue
             x = note["x"] + note["sway"] * math.sin(now * 2.2 + note["phase"])
             img = note["img"]
@@ -995,10 +722,9 @@ def main():
         for slot, track in car["wheel"].items():
             if track is None and not (slot == 0 or (slot == 1 and prevs is None)):
                 # Empty seats stay empty, with two exceptions: the focused
-                # seat always shows a disc (a bare platter would leave the
-                # horn's neck dangling mid-air before the first track
-                # arrives), and +1 gets a placeholder while the upcoming
-                # side is still a guess.
+                # seat always shows a disc, so the wheel still reads as a
+                # wheel before the first track arrives, and +1 gets a
+                # placeholder while the upcoming side is still a guess.
                 continue
             if fade:
                 amult = pe  # fading in uniformly, in place
@@ -1018,13 +744,7 @@ def main():
             if alpha * amult > 2:
                 drawlist.append((scale, x, y, alpha * amult, track))
         anim_active = car["anim"] is not None
-        horn_up = False
         for scale, x, y, alpha, track in sorted(drawlist, key=lambda d: d[0]):
-            if not horn_up and scale >= HORN_LAYER:
-                # Back row is down - the horn stands in front of it, and the
-                # front row (drawn next) stands in front of the horn.
-                screen.blit(horn, horn_pos)
-                horn_up = True
             size = max(2, int(COVER * scale))
             base = cover_surface(track)
             if track and track.get("id") and track.get("id") == car["cur_id"]:
@@ -1036,8 +756,6 @@ def main():
                 surf = scaled_disc(base, size)
             surf.set_alpha(int(alpha))
             screen.blit(surf, surf.get_rect(center=(int(x), int(y))))
-        if not horn_up:  # empty wheel - the horn still stands there
-            screen.blit(horn, horn_pos)
         return cur
 
     status = status = {"spotify": "Connecting to Spotify...", "spotify_state": "wait",
@@ -1117,26 +835,22 @@ def main():
                 title = title.convert_alpha()
                 title = pygame.transform.smoothscale(title, (int(24 * title.get_width() / title.get_height()), 24))
                 screen.blit(title, (67, 28))
-            # Cover wheel + track text. The text sits on the phonograph
-            # body's gold plate (168-328 x 396-450 on the cabinet layer),
-            # centred on the plate rather than the window, so it's capped
-            # and centred to it. Dark ink - white on gold won't read.
+            # Cover wheel + track text. The text used to sit on the
+            # phonograph's gold plate; with the cabinet gone it reads
+            # straight off the vinyl, centred on the window under the
+            # wheel, in the same light ink as the rest of the UI.
             cur = draw_carousel(now, status, t, energy, spin_deg)
-            screen.blit(cabinet, cabinet_pos)  # over the glow, under the text
-            draw_horn_notes(now, dt, status["playing"])
-            box_cx = 248  # gold plate centre on the cabinet's front face
+            draw_drift_notes(now, dt, status["playing"])
             text_y = 402
-            PLATE_INK = (52, 34, 18)
-            PLATE_DIM = (104, 72, 38)
             if cur:
-                name_img = track_font.render(fit_text(track_font, cur["name"], 150), True, PLATE_INK)
-                artist_img = artist_font.render(fit_text(artist_font, cur["artist"], 150), True, PLATE_DIM)
-                screen.blit(name_img, (box_cx - name_img.get_width() // 2, text_y))
-                screen.blit(artist_img, (box_cx - artist_img.get_width() // 2,
+                name_img = track_font.render(fit_text(track_font, cur["name"], 300), True, TEXT)
+                artist_img = artist_font.render(fit_text(artist_font, cur["artist"], 300), True, DIM)
+                screen.blit(name_img, (W // 2 - name_img.get_width() // 2, text_y))
+                screen.blit(artist_img, (W // 2 - artist_img.get_width() // 2,
                                          text_y + name_img.get_height() + 2))
             else:
-                empty_img = artist_font.render("Nothing playing", True, PLATE_DIM)
-                screen.blit(empty_img, (box_cx - empty_img.get_width() // 2, text_y + 12))
+                empty_img = artist_font.render("Nothing playing", True, DIM)
+                screen.blit(empty_img, (W // 2 - empty_img.get_width() // 2, text_y + 12))
 
             # EQ strip / connection state
             eq_base = 516
