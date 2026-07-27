@@ -39,13 +39,24 @@ def main():
         except Exception:
             return pygame.font.SysFont("helveticaneue,helvetica,arial", size)
 
+    # Two faces, split by who is talking. Relidux - a geometric display sans
+    # with a full character set - carries anything that comes from Spotify or
+    # reads as a sentence. Technoid is the machine's own voice: the fixed
+    # labels and the alerts, all caps, wide and spaced out like a readout.
+    #
+    # Technoid can't take content. It has no ellipsis - fit_text's "…" comes
+    # out a tofu box - so nothing that gets truncated may use it. Its letters
+    # also sit small in the em (a cap is ~0.45 of the point size, against
+    # Relidux's ~0.8), which is why the sizes below look mismatched and
+    # aren't: Technoid 20 and Relidux 11 have nearly the same cap height.
     wordmark_font = load_font("Poppins-Bold.ttf", 26)
-    sub_font = load_font("Poppins-Regular.ttf", 11)
-    track_font = load_font("Poppins-Bold.ttf", 17)
-    artist_font = load_font("Poppins-Regular.ttf", 12)
-    label_font = load_font("Poppins-SemiBold.ttf", 13)
-    status_font = load_font("Poppins-Regular.ttf", 11)
-    hint_font = load_font("Poppins-Regular.ttf", 11)
+    sub_font = load_font("Relidux.otf", 11)
+    track_font = load_font("Relidux.otf", 18)
+    artist_font = load_font("Relidux.otf", 12)
+    label_font = load_font("TECHNOID.TTF", 20)
+    status_font = load_font("Relidux.otf", 11)
+    hint_font = load_font("Relidux.otf", 11)
+    alert_font = load_font("TECHNOID.TTF", 21)
 
     TEXT = (238, 240, 246)
     DIM = (132, 136, 154)
@@ -102,7 +113,9 @@ def main():
         radius = 5 if state != "wait" else 4 + 1.5 * (0.5 + 0.5 * math.sin(t * 4))
         pygame.draw.circle(screen, tuple(c // 3 for c in color), (x + 21, cy), int(radius) + 4)
         pygame.draw.circle(screen, color, (x + 21, cy), int(radius))
-        label_img = label_font.render(label, True, TEXT)
+        # Upper-cased for Technoid, whose lowercase is a squarish techno set
+        # that misreads at label size - the t in "Spotify" comes out as a b.
+        label_img = label_font.render(label.upper(), True, TEXT)
         screen.blit(label_img, (x + 36, y + 6))
         text_img = status_font.render(fit_text(status_font, text, w - 48), True, DIM)
         screen.blit(text_img, (x + 36, y + 8 + label_img.get_height()))
@@ -694,14 +707,14 @@ def main():
                     pygame.draw.rect(screen, color, (x0 + i * (bar_w + gap), eq_base - bh, bar_w, bh),
                                      border_radius=3)
                 if energy < 0.85:
-                    p_img = hint_font.render("PAUSED", True, (110, 160, 128))
+                    p_img = alert_font.render("PAUSED", True, (110, 160, 128))
                     p_img.set_alpha(int(255 * (1.0 - energy / 0.85)))
                     screen.blit(p_img, (W // 2 - p_img.get_width() // 2, eq_base - 48))
             else:
                 flatline_y = eq_base - 12
                 pygame.draw.line(screen, (150, 70, 70), (W // 2 - 110, flatline_y),
                                  (W // 2 + 110, flatline_y), 2)
-                nc_img = label_font.render("NOT CONNECTED", True, RED)
+                nc_img = alert_font.render("NOT CONNECTED", True, RED)
                 nc_img.set_alpha(int(160 + 95 * math.sin(t * 2.5)))
                 screen.blit(nc_img, (W // 2 - nc_img.get_width() // 2, flatline_y - 32))
 
