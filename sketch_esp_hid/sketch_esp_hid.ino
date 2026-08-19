@@ -183,7 +183,9 @@ void sendMediaKey(uint8_t mask, const char *label) {
 // driven from the BLE task.
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *server, NimBLEConnInfo &info) override {
-    strncpy(peerAddr, info.getAddress().toString().c_str(), sizeof(peerAddr) - 1);
+    // Identity address, not getAddress(): Apple devices rotate their over-the-air
+    // address every few minutes, so that one makes a returning host look brand new.
+    strncpy(peerAddr, info.getIdAddress().toString().c_str(), sizeof(peerAddr) - 1);
     peerAddr[sizeof(peerAddr) - 1] = '\0';
     bleConnected = true;
   }
