@@ -7,6 +7,8 @@
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
 #include <FastLED.h>
+#include <Preferences.h>
+Preferences prefs;
 
 #define LED_PIN 18
 #define NUMPIXELS 8
@@ -88,13 +90,17 @@ bool volumeUp = false;
 unsigned long lastVolumeTick = 0;
 const unsigned long VOLUME_INTERVAL = 200;
 
-// HID gives us no way to read the host's real volume, so the bar is an estimate:
-// macOS and iOS both move 1/16 of the range per press. Windows moves 2%, so the
-// bar drifts there. It's feedback that a gesture landed, not a readout.
+// Nothing comes back over HID, so the host's real volume is unknowable and the bar
+// is an estimate: macOS and iOS move 1/16 of the range per press, Windows 2%. It
+// self-corrects at the rails - ramping to 0 or 100 puts the real volume there too.
+// Persisted to NVS so a power cycle doesn't drop it back to a wrong half-full bar.
 int volEstimate = 50;
 const int VOLUME_STEP = 6;
-const unsigned long VOLUME_LED_HOLD = 1500;
-bool ledsLit = false;
+bool volDirty = false;
+
+// Whether volEstimate means anything yet for the host we're currently talking to.
+bool calibrated = false;
+char peerAddr[24] = "";
 
 int outOfRangeCount = 0;
 unsigned long lastReadTime = 0;
@@ -125,24 +131,35 @@ void handleFlash() {
   }
 }
 
+// pos 0..1 along the strip. SPARC blue: light blue at the start → dark blue at the end.
+CRGB barColour(float pos) {
+  int r = map(pos * 100, 0, 100, 120,   0);
+  int g = map(pos * 100, 0, 100, 200,   0);
+  int b = map(pos * 100, 0, 100, 255, 120);
+  return CRGB(r, g, b);
+}
+
 void updateVolumeLEDs(int vol) {
   int bars = map(vol, 0, 100, 0, NUMPIXELS);
   if (vol > 0 && bars == 0) bars = 1; // any nonzero volume shows at least 1 LED
 
   for (int i = 0; i < NUMPIXELS; i++) {
-    if (i < bars) {
-      float pos = (float)i / (NUMPIXELS - 1);
-
-      // SPARC blue: light blue (first LED) → dark blue (last LED)
-      int r = map(pos * 100, 0, 100, 120,   0);
-      int g = map(pos * 100, 0, 100, 200,   0);
-      int b = map(pos * 100, 0, 100, 255, 120);
-      leds[i] = CRGB(r, g, b);
-    } else {
-      leds[i] = CRGB::Black;
-    }
+    leds[i] = (i < bars) ? barColour((float)i / (NUMPIXELS - 1)) : CRGB::Black;
   }
   FastLED.show();
+}
+
+// Whole strip in the gradient's middle colour: connected, but this host's volume is
+// still unknown. Clears as soon as a volume gesture gives us something to track.
+void showUncalibrated() {
+  for (int i = 0; i < NUMPIXELS; i++) leds[i] = barColour(0.5);
+  FastLED.show();
+}
+
+void showBar() {
+  if (!bleConnected)    updateVolumeLEDs(0);  // dark when nothing is paired
+  else if (!calibrated) showUncalibrated();
+  else                  updateVolumeLEDs(volEstimate);
 }
 
 // Press and release. Leaving a bit set reads as a stuck key - for volume the
@@ -166,6 +183,8 @@ void sendMediaKey(uint8_t mask, const char *label) {
 // driven from the BLE task.
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *server, NimBLEConnInfo &info) override {
+    strncpy(peerAddr, info.getAddress().toString().c_str(), sizeof(peerAddr) - 1);
+    peerAddr[sizeof(peerAddr) - 1] = '\0';
     bleConnected = true;
   }
   void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {
@@ -215,6 +234,8 @@ void setup() {
   FastLED.clear();
   FastLED.show();
 
+  prefs.begin("sparc", false);
+
   // On a cold power-up the VL53L0X shares the ESP32's rail and is still booting
   // when we get here, so an immediate begin() finds nothing. Wait, retry, and
   // carry on either way so a dead sensor can't take Bluetooth down with it.
@@ -235,11 +256,22 @@ void setup() {
 void loop() {
   if (bleConnected && !wasConnected) {
     wasConnected = true;
-    Serial.println("BLE connected");
+    // A different host's volume has nothing to do with the last one's, so only a
+    // returning host gets its tracked level back.
+    if (prefs.getString("peer", "") == peerAddr) {
+      volEstimate = prefs.getInt("vol", 50);
+      calibrated  = prefs.getBool("cal", false);
+    } else {
+      calibrated = false;
+      prefs.putString("peer", peerAddr);
+      prefs.putBool("cal", false);
+    }
+    showBar();
+    Serial.print("BLE connected: ");
+    Serial.println(peerAddr);
   } else if (!bleConnected && wasConnected) {
     digitalWrite(ledPause, LOW);
     updateVolumeLEDs(0);
-    ledsLit = false;
     flashPin = -1;
     resetGestureState();
     handInZone = false;
@@ -263,13 +295,16 @@ void loop() {
       volEstimate = constrain(volEstimate - VOLUME_STEP, 0, 100);
       if (volEstimate <= 0) volumeActive = false;
     }
+    calibrated = true;
     updateVolumeLEDs(volEstimate);
-    ledsLit = true;
+    volDirty = true;
   }
 
-  if (ledsLit && !volumeActive && millis() - lastVolumeTick > VOLUME_LED_HOLD) {
-    updateVolumeLEDs(0);
-    ledsLit = false;
+  // NVS wears out with writes, so save once the ramp settles rather than per tick.
+  if (volDirty && !volumeActive) {
+    prefs.putInt("vol", volEstimate);
+    prefs.putBool("cal", true);
+    volDirty = false;
   }
 
   if (millis() - lastReadTime < READ_INTERVAL) return;
