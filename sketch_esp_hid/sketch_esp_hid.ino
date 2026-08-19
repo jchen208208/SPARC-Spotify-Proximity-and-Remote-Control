@@ -52,9 +52,29 @@ const unsigned long KEY_HOLD_MS = 15;
 
 NimBLEHIDDevice *hid = nullptr;
 NimBLECharacteristic *inputReport = nullptr;
+NimBLEServer *pServer = nullptr;
 volatile bool bleConnected = false;
+volatile bool authDone = false;
+volatile uint16_t connHandle = 0;
 bool wasConnected = false;
 char peerAddr[24] = "";
+
+// Apple Media Service: iOS pushes now-playing state to accessories over GATT - it's
+// what Apple Watch uses. Unlike a volume estimate this is a closed loop, since every
+// play/pause/seek re-anchors it, so drift can't accumulate. iOS only; on anything
+// else discovery just fails and the strip stays in gesture-animation mode.
+static const char *AMS_SERVICE       = "89D3502B-0F36-433A-8EF4-C502AD55F8DC";
+static const char *AMS_ENTITY_UPDATE = "2F7CABCE-808D-411F-9A0C-BB92BA96C102";
+
+bool amsFound = false;
+int amsTries = 0;
+unsigned long amsNextTry = 0;
+
+float amsElapsed = 0;    // seconds into the track, as of amsAnchor
+float amsRate = 1.0;
+float amsDuration = 0;
+int amsState = 0;        // 0 paused, 1 playing, 2 rewinding, 3 fast-forwarding
+unsigned long amsAnchor = 0;
 
 // Zone boundaries in cm
 const float DETECT_MIN = 2.0;
@@ -97,6 +117,8 @@ Anim anim = ANIM_NONE;
 unsigned long animStart = 0;
 const unsigned long ANIM_STEP = 45;   // ms per LED
 const unsigned long PULSE_MS = 320;
+const unsigned long FRAME_MS = 20;    // cap redraws; WS2812B writes are not free
+unsigned long lastFrame = 0;
 
 // Nothing tells us when the host hits max/min, so bound the ramp ourselves.
 // macOS and iOS cover the full range in 16 presses.
@@ -142,6 +164,26 @@ CRGB barColour(float pos) {
 
 void stripOff() {
   FastLED.clear();
+  FastLED.show();
+}
+
+// AMS only pushes on change, so interpolate between updates for a smooth bar.
+void renderProgress() {
+  if (amsDuration < 1.0) return; // no track loaded yet
+
+  float pos = amsElapsed;
+  if (amsState == 1) pos += (millis() - amsAnchor) / 1000.0f * amsRate;
+  float frac = constrain(pos / amsDuration, 0.0f, 1.0f);
+
+  float lit = frac * NUMPIXELS;
+  int full = (int)lit;
+  uint8_t partial = (uint8_t)((lit - full) * 255);
+
+  for (int i = 0; i < NUMPIXELS; i++) {
+    leds[i] = barColour((float)i / (NUMPIXELS - 1));
+    if (i > full)       leds[i] = CRGB::Black;
+    else if (i == full) leds[i].nscale8(partial); // part-lit head keeps 8 pixels smooth
+  }
   FastLED.show();
 }
 
@@ -202,6 +244,59 @@ void sendMediaKey(uint8_t mask, const char *label) {
   Serial.println(label);
 }
 
+// Notification payload: [EntityID][AttributeID][flags][value as UTF-8].
+void amsNotify(NimBLERemoteCharacteristic *chr, uint8_t *data, size_t len, bool isNotify) {
+  if (len < 3) return;
+
+  char buf[48];
+  size_t n = len - 3;
+  if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+  memcpy(buf, data + 3, n);
+  buf[n] = '\0';
+
+  if (data[0] == 0 && data[1] == 1) {        // Player / PlaybackInfo
+    // "state,rate,elapsed" - any field may arrive empty, so keep the last known value.
+    char *f[3] = {buf, nullptr, nullptr};
+    int nf = 1;
+    for (char *c = buf; *c && nf < 3; c++) {
+      if (*c == ',') { *c = '\0'; f[nf++] = c + 1; }
+    }
+    if (f[0] && *f[0]) amsState   = atoi(f[0]);
+    if (f[1] && *f[1]) amsRate    = atof(f[1]);
+    if (f[2] && *f[2]) amsElapsed = atof(f[2]);
+    amsAnchor = millis();
+  } else if (data[0] == 2 && data[1] == 3) { // Track / Duration
+    amsDuration = atof(buf);
+  }
+}
+
+// We're the peripheral, but GATT is symmetric - NimBLEServer::getClient() hands us a
+// client for the inbound connection so we can read services on the phone.
+void setupAMS() {
+  NimBLEClient *client = pServer->getClient(connHandle);
+  if (!client) return;
+
+  NimBLERemoteService *svc = client->getService(AMS_SERVICE);
+  if (!svc) {
+    Serial.println("AMS not offered - gesture animations only");
+    return;
+  }
+
+  NimBLERemoteCharacteristic *eu = svc->getCharacteristic(AMS_ENTITY_UPDATE);
+  if (!eu || !eu->subscribe(true, amsNotify)) {
+    Serial.println("AMS entity update subscribe failed");
+    return;
+  }
+
+  const uint8_t wantPlayer[] = {0, 1}; // Player -> PlaybackInfo (state, rate, elapsed)
+  const uint8_t wantTrack[]  = {2, 3}; // Track  -> Duration
+  eu->writeValue(wantPlayer, sizeof(wantPlayer), true);
+  eu->writeValue(wantTrack, sizeof(wantTrack), true);
+
+  amsFound = true;
+  Serial.println("AMS connected - progress bar active");
+}
+
 // Only flags state - the LED teardown happens in loop() so FastLED is never
 // driven from the BLE task.
 class ServerCallbacks : public NimBLEServerCallbacks {
@@ -210,11 +305,21 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     // address every few minutes, so that one makes a returning host look brand new.
     strncpy(peerAddr, info.getIdAddress().toString().c_str(), sizeof(peerAddr) - 1);
     peerAddr[sizeof(peerAddr) - 1] = '\0';
+    connHandle = info.getConnHandle();
     bleConnected = true;
   }
   void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {
     bleConnected = false;
+    authDone = false;
+    amsFound = false;
+    amsTries = 0;
+    amsDuration = 0;
     NimBLEDevice::startAdvertising(); // or it never comes back
+  }
+  // iOS won't expose AMS until the link is encrypted, so don't probe before bonding.
+  void onAuthenticationComplete(NimBLEConnInfo &info) override {
+    authDone = true;
+    amsNextTry = 0;
   }
 };
 
@@ -233,7 +338,8 @@ void setup() {
   NimBLEDevice::setSecurityAuth(true, false, true); // bonding, no MITM, secure connections
   NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
 
-  NimBLEServer *server = NimBLEDevice::createServer();
+  pServer = NimBLEDevice::createServer();
+  NimBLEServer *server = pServer;
   server->setCallbacks(new ServerCallbacks());
 
   hid = new NimBLEHIDDevice(server);
@@ -304,10 +410,22 @@ void loop() {
     if (++volumeSteps >= MAX_VOLUME_STEPS) volumeActive = false;
   }
 
-  renderAnim();
   if (!volumeActive && (anim == ANIM_VOL_UP || anim == ANIM_VOL_DN)) {
     anim = ANIM_NONE;
     stripOff();
+  }
+
+  // A gesture animation always wins for its ~360ms; the bar resumes underneath.
+  if (millis() - lastFrame >= FRAME_MS) {
+    lastFrame = millis();
+    if (anim != ANIM_NONE) renderAnim();
+    else if (amsFound)     renderProgress();
+  }
+
+  if (authDone && !amsFound && amsTries < 5 && millis() >= amsNextTry) {
+    amsTries++;
+    amsNextTry = millis() + 2000;
+    setupAMS();
   }
 
   if (millis() - lastReadTime < READ_INTERVAL) return;
