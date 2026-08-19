@@ -7,8 +7,6 @@
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
 #include <FastLED.h>
-#include <Preferences.h>
-Preferences prefs;
 
 #define LED_PIN 18
 #define NUMPIXELS 8
@@ -56,6 +54,7 @@ NimBLEHIDDevice *hid = nullptr;
 NimBLECharacteristic *inputReport = nullptr;
 volatile bool bleConnected = false;
 bool wasConnected = false;
+char peerAddr[24] = "";
 
 // Zone boundaries in cm
 const float DETECT_MIN = 2.0;
@@ -90,17 +89,19 @@ bool volumeUp = false;
 unsigned long lastVolumeTick = 0;
 const unsigned long VOLUME_INTERVAL = 200;
 
-// Nothing comes back over HID, so the host's real volume is unknowable and the bar
-// is an estimate: macOS and iOS move 1/16 of the range per press, Windows 2%. It
-// self-corrects at the rails - ramping to 0 or 100 puts the real volume there too.
-// Persisted to NVS so a power cycle doesn't drop it back to a wrong half-full bar.
-int volEstimate = 50;
-const int VOLUME_STEP = 6;
-bool volDirty = false;
+// The strip can't show the host's volume - nothing comes back over HID to read, and
+// an open-loop estimate desyncs the moment the user touches the volume themselves.
+// It confirms gestures instead, which needs no host state and so is never wrong.
+enum Anim { ANIM_NONE, ANIM_NEXT, ANIM_PREV, ANIM_PULSE, ANIM_VOL_UP, ANIM_VOL_DN };
+Anim anim = ANIM_NONE;
+unsigned long animStart = 0;
+const unsigned long ANIM_STEP = 45;   // ms per LED
+const unsigned long PULSE_MS = 320;
 
-// Whether volEstimate means anything yet for the host we're currently talking to.
-bool calibrated = false;
-char peerAddr[24] = "";
+// Nothing tells us when the host hits max/min, so bound the ramp ourselves.
+// macOS and iOS cover the full range in 16 presses.
+int volumeSteps = 0;
+const int MAX_VOLUME_STEPS = 20;
 
 int outOfRangeCount = 0;
 unsigned long lastReadTime = 0;
@@ -139,27 +140,49 @@ CRGB barColour(float pos) {
   return CRGB(r, g, b);
 }
 
-void updateVolumeLEDs(int vol) {
-  int bars = map(vol, 0, 100, 0, NUMPIXELS);
-  if (vol > 0 && bars == 0) bars = 1; // any nonzero volume shows at least 1 LED
+void stripOff() {
+  FastLED.clear();
+  FastLED.show();
+}
+
+void startAnim(Anim a) {
+  anim = a;
+  animStart = millis();
+}
+
+// Non-blocking: called every loop, draws one frame and clears itself when done.
+void renderAnim() {
+  if (anim == ANIM_NONE) return;
+  unsigned long t = millis() - animStart;
+
+  if (anim == ANIM_PULSE) {
+    if (t >= PULSE_MS) { anim = ANIM_NONE; stripOff(); return; }
+    uint8_t fade = 255 - (t * 255 / PULSE_MS);
+    for (int i = 0; i < NUMPIXELS; i++) {
+      leds[i] = barColour((float)i / (NUMPIXELS - 1));
+      leds[i].nscale8(fade);
+    }
+    FastLED.show();
+    return;
+  }
+
+  unsigned long frame = t / ANIM_STEP;
+  bool looping = (anim == ANIM_VOL_UP || anim == ANIM_VOL_DN);
+  if (!looping && frame >= NUMPIXELS) { anim = ANIM_NONE; stripOff(); return; }
+
+  int head = frame % NUMPIXELS;
+  if (anim == ANIM_PREV || anim == ANIM_VOL_DN) head = NUMPIXELS - 1 - head;
 
   for (int i = 0; i < NUMPIXELS; i++) {
-    leds[i] = (i < bars) ? barColour((float)i / (NUMPIXELS - 1)) : CRGB::Black;
+    int behind = (anim == ANIM_PREV || anim == ANIM_VOL_DN) ? i - head : head - i;
+    if (behind >= 0 && behind < 3) {          // lit head plus a short tail
+      leds[i] = barColour((float)i / (NUMPIXELS - 1));
+      leds[i].nscale8(255 >> (behind * 2));
+    } else {
+      leds[i] = CRGB::Black;
+    }
   }
   FastLED.show();
-}
-
-// Whole strip in the gradient's middle colour: connected, but this host's volume is
-// still unknown. Clears as soon as a volume gesture gives us something to track.
-void showUncalibrated() {
-  for (int i = 0; i < NUMPIXELS; i++) leds[i] = barColour(0.5);
-  FastLED.show();
-}
-
-void showBar() {
-  if (!bleConnected)    updateVolumeLEDs(0);  // dark when nothing is paired
-  else if (!calibrated) showUncalibrated();
-  else                  updateVolumeLEDs(volEstimate);
 }
 
 // Press and release. Leaving a bit set reads as a stuck key - for volume the
@@ -236,7 +259,6 @@ void setup() {
   FastLED.clear();
   FastLED.show();
 
-  prefs.begin("sparc", false);
 
   // On a cold power-up the VL53L0X shares the ESP32's rail and is still booting
   // when we get here, so an immediate begin() finds nothing. Wait, retry, and
@@ -258,22 +280,12 @@ void setup() {
 void loop() {
   if (bleConnected && !wasConnected) {
     wasConnected = true;
-    // A different host's volume has nothing to do with the last one's, so only a
-    // returning host gets its tracked level back.
-    if (prefs.getString("peer", "") == peerAddr) {
-      volEstimate = prefs.getInt("vol", 50);
-      calibrated  = prefs.getBool("cal", false);
-    } else {
-      calibrated = false;
-      prefs.putString("peer", peerAddr);
-      prefs.putBool("cal", false);
-    }
-    showBar();
     Serial.print("BLE connected: ");
     Serial.println(peerAddr);
   } else if (!bleConnected && wasConnected) {
     digitalWrite(ledPause, LOW);
-    updateVolumeLEDs(0);
+    anim = ANIM_NONE;
+    stripOff();
     flashPin = -1;
     resetGestureState();
     handInZone = false;
@@ -288,25 +300,14 @@ void loop() {
   // it now, so it also owns deciding when to stop.
   if (volumeActive && millis() - lastVolumeTick >= VOLUME_INTERVAL) {
     lastVolumeTick = millis();
-    if (volumeUp) {
-      sendMediaKey(KEY_VOL_UP, "VOL+");
-      volEstimate = constrain(volEstimate + VOLUME_STEP, 0, 100);
-      if (volEstimate >= 100) volumeActive = false;
-    } else {
-      sendMediaKey(KEY_VOL_DOWN, "VOL-");
-      volEstimate = constrain(volEstimate - VOLUME_STEP, 0, 100);
-      if (volEstimate <= 0) volumeActive = false;
-    }
-    calibrated = true;
-    updateVolumeLEDs(volEstimate);
-    volDirty = true;
+    sendMediaKey(volumeUp ? KEY_VOL_UP : KEY_VOL_DOWN, volumeUp ? "VOL+" : "VOL-");
+    if (++volumeSteps >= MAX_VOLUME_STEPS) volumeActive = false;
   }
 
-  // NVS wears out with writes, so save once the ramp settles rather than per tick.
-  if (volDirty && !volumeActive) {
-    prefs.putInt("vol", volEstimate);
-    prefs.putBool("cal", true);
-    volDirty = false;
+  renderAnim();
+  if (!volumeActive && (anim == ANIM_VOL_UP || anim == ANIM_VOL_DN)) {
+    anim = ANIM_NONE;
+    stripOff();
   }
 
   if (millis() - lastReadTime < READ_INTERVAL) return;
@@ -343,10 +344,13 @@ void loop() {
       } else if (passCount == 1 && handZone == passZone && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
         if (passZone == 1) {
           sendMediaKey(KEY_PREV, "PREV");
+          startAnim(ANIM_PREV);
         } else {
           volumeUp = false;
           volumeActive = true;
+          volumeSteps = 0;
           lastVolumeTick = 0;
+          startAnim(ANIM_VOL_DN);
         }
         passCount = 0;
       } else {
@@ -365,6 +369,7 @@ void loop() {
         volumeActive = false;
       } else {
         sendMediaKey(KEY_PLAY_PAUSE, "PLAY/PAUSE");
+        startAnim(ANIM_PULSE);
       }
       flashLed(ledPause);
       holdFired = true;
@@ -375,10 +380,13 @@ void loop() {
   if (!handInZone && passCount == 1 && !volumeActive && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
     if (passZone == 1) {
       sendMediaKey(KEY_NEXT, "NEXT");
+      startAnim(ANIM_NEXT);
     } else {
       volumeUp = true;
       volumeActive = true;
+      volumeSteps = 0;
       lastVolumeTick = 0;
+      startAnim(ANIM_VOL_UP);
     }
     passCount = 0;
   }
