@@ -1,270 +1,126 @@
 # 🎵 SPARC
 
-<img width="485" height="400" alt="Screenshot 2026-06-17 at 3 04 28 PM" src="https://github.com/user-attachments/assets/b5467583-4feb-4fdb-be22-021c79f3054c" />
+<img width="485" height="400" alt="SPARC" src="https://github.com/user-attachments/assets/b5467583-4feb-4fdb-be22-021c79f3054c" />
 
+**S**potify **P**roximity **a**nd **R**emote **C**ontrol — a desk-mounted gesture controller.
+Wave your hand over it to skip tracks, change volume, or pause. No touchscreen, no buttons,
+no phone.
 
-A desk-mounted gesture controller that lets you control Spotify hands-free using nothing but hand movements in the air. Built with an Arduino Uno, an HC-SR04 ultrasonic distance sensor, and a Python backend — no touchscreen, no buttons, no phone.
-We plan to scale it into a product best used to control Spotify while driving. As an avid music listener, I find that constantly looking at the dashboard display or your phone to adjust the music while driving is very precarious and inconvenient. With this device, all you have to do is signal hand motions, and our program will take care of all the adjustments for you.
-
-> Built as a hardware/software integration project exploring embedded systems, serial communication, and API-driven automation.
-
----
-
-## Demo
-
-> 📸 *Photo/video coming soon*
+Built for situations where looking at a screen is inconvenient or unsafe — adjusting music
+while driving, mainly.
 
 ---
 
-## Overview
+## How it works
 
-SPARC is a two-part embedded system:
+SPARC pairs to your phone or laptop as a **Bluetooth media remote** — the same class of
+device as the play/pause button on a pair of headphones.
 
-- **Firmware (C++)** — runs on an Arduino Uno. Reads distance values from an ultrasonic sensor every 50ms, applies a multi-layer false-trigger filter, and classifies hand motions into discrete gesture events using a direction and duration-based decision tree. Sends gesture labels as plain text over USB Serial.
+It does not talk to Spotify. It sends standard HID media-key presses to the operating
+system, which routes them to whatever app is currently playing. That means:
 
-- **Backend (Python)** — runs on the host laptop. Listens on the Serial port, maps incoming gesture labels to Spotify Web API calls via Spotipy, plays audio connection feedback, and logs every interaction to a SQLite database. An optional Flask dashboard visualizes session analytics.
+- **No app to install** — pair it in Bluetooth settings and it works
+- **No Spotify account, login, or Premium subscription**
+- Works on **iOS, Android, macOS, Windows, Linux**
+- Works with **any** media app — Spotify, Apple Music, YouTube, podcasts
 
-The two sides communicate exclusively through plain text over USB Serial — a clean, language-agnostic interface that lets the firmware and backend be developed and tested independently.
+It also works with the screen off and the phone in your pocket, for the same reason your
+headphone buttons do.
 
 ---
 
-## Gesture Reference
+## Gestures
 
-The system recognizes **five gestures** across **two distance zones**:
+Two zones above the sensor:
 
-| Zone | Range |
-|---|---|
-| Zone 1 | 2–50 cm above sensor |
-| Zone 2 | 50–100 cm above sensor |
-
-### Zone 1 — Track Control
-
-| Gesture | Motion | Action |
+| Zone | Range | Controls |
 |---|---|---|
-| Single pass | Hand passes in front of sensor once, briefly | ⏭ Next track |
-| Double pass | Hand passes in front of sensor twice within 0.5 seconds | ⏮ Previous track |
+| 1 | 2–15 cm | Tracks |
+| 2 | 15–30 cm | Volume |
 
-### Zone 2 — Volume Control
-
-Volume changes are continuous — once triggered, volume keeps increasing or decreasing until the **Stop** function is triggered.
-
-| Gesture | Motion | Action |
+| Gesture | Zone 1 | Zone 2 |
 |---|---|---|
-| Single pass | Hand passes in front of sensor once, briefly | 🔊 Begin volume up (continues until Stop) |
-| Double pass | Hand passes in front of sensor twice within 0.5 seconds | 🔉 Begin volume down (continues until Stop) |
+| Single pass | ⏭ Next track | 🔊 Volume up |
+| Double pass (within 0.8s) | ⏮ Previous track | 🔉 Volume down |
+| Hold (0.3s) | ⏯ Play/pause | ⏹ Stop the volume ramp |
 
-### Stop Function (Either Zone)
-
-| Gesture | Zone | Motion | Action |
-|---|---|---|---|
-| Hold | 2–100 cm | Hand held still in front of sensor for 1 second straight | ⏸▶️ If volume is changing, stop the volume change. Otherwise, toggle Pause/Play |
-
-The Stop function first checks whether volume is currently increasing or decreasing. If so, it stops the volume change. If volume is not changing, it toggles play/pause instead.
+Volume ramps continuously once started. Hold your hand still to stop it.
 
 ---
 
 ## Hardware
 
-| Component | Purpose |
+| Component | Notes |
 |---|---|
-| Arduino Uno | Microcontroller — runs C++ firmware |
-| HC-SR04 Ultrasonic Sensor | Measures hand distance (detection zone: 1–8cm) |
-| RGB LED | Visual gesture confirmation and system state indicator |
-| Toggle Switch | Hardware arm/disarm for the sensor circuit |
-| Breadboard + Jumper Wires | No-solder prototyping |
+| ESP32 (WROOM-32) | Built-in Bluetooth — no separate radio module |
+| VL53L0X | Time-of-flight distance sensor, I²C on SDA 21 / SCL 22 |
+| 8× WS2812B | Volume bar, data on GPIO 18 |
+| LED | Play/pause flash, GPIO 4 |
 
-**Total hardware cost: ~$30–45**
-
-### Wiring
-
-```
-HC-SR04 VCC  → Toggle Switch → Arduino 5V
-HC-SR04 GND  → Arduino GND
-HC-SR04 TRIG → Arduino Pin 9
-HC-SR04 ECHO → Arduino Pin 10
-
-RGB LED R    → Arduino Pin 3 (PWM)
-RGB LED G    → Arduino Pin 5 (PWM)
-RGB LED B    → Arduino Pin 6 (PWM)
-RGB LED GND  → Arduino GND
-```
+Runs off a power bank.
 
 ---
 
-## Software Stack
+## Flashing
 
-| Tool | Role |
-|---|---|
-| C++ (Arduino) | Firmware — sensor reading, gesture classification, LED control |
-| Python 3 | Backend — Serial listener, Spotify integration, session logging |
-| pyserial | Reads plain text gesture labels from USB Serial port |
-| Spotipy | Spotify Web API wrapper — track control, volume, playback |
-| playsound | Audio feedback on connection and disconnection |
-| SQLite | Persistent gesture event logging |
-| Flask *(optional)* | Session analytics dashboard |
-
----
-
-## System Architecture
-
-```
-[HC-SR04 Sensor]
-      │ distance in cm (every 50ms)
-      ▼
-[Arduino Uno — C++ Firmware]
-  • 3-layer false trigger filter
-  • Direction + duration gesture classifier
-  • RGB LED state indicator
-      │ plain text over USB Serial ("next", "prev", "pause"...)
-      ▼
-[Python Backend — host laptop]
-  • Startup health check (Arduino + Spotify)
-  • Audio feedback ("connected" / "disconnected")
-  • Spotify Web API calls via Spotipy
-  • SQLite gesture event logging
-      │
-      ▼
-[Spotify Web API → Spotify Client]
-```
-
----
-
-## False Trigger Prevention
-
-Reliable gesture detection in a real desk environment required three layers of filtering:
-
-**1. Hard distance cap** — the firmware ignores all sensor readings beyond 8cm. The sensor physically detects up to 200cm, but anything outside the intentional zone is discarded in code before any gesture logic runs.
-
-**2. Consecutive confirmation** — a hand must appear in at least 3 consecutive sensor readings before it registers as present. This eliminates single-frame noise and electrical jitter.
-
-**3. Gesture cooldown** — after any gesture is classified, the system ignores all input for 1 second. This prevents sloppy or lingering hand movements from registering as follow-up gestures.
-
----
-
-## LED State Reference
-
-| Color | Meaning |
-|---|---|
-| Dim white pulse | Idle — armed and listening |
-| Green flash | Next track |
-| Yellow flash | Previous track |
-| Red flash | Pause / Resume |
-| Solid blue | Volume mode active |
-| Purple flash | Focus playlist activated |
-| Off | Toggle switch is off |
-
----
-
-## Three-Condition Activation
-
-The system only operates when all three conditions are simultaneously true:
-
-1. **Toggle switch is ON** — powers the sensor; enforced entirely in hardware, no code required
-2. **Python script is running** — listening on the Serial port and connected to Spotify API
-3. **Spotify is open and active** — a song must be playing for playback controls to work
-
-On startup, the Python backend checks conditions 2 and 3 and plays `connected.wav` or `disconnected.wav` accordingly.
-
----
-
-## Setup
-
-### Prerequisites
-
-- Arduino IDE
-- Python 3.8+
-- A Spotify Premium account (required for playback control via API)
-- A free Spotify Developer account
-
-### Hardware
-
-1. Wire components as shown in the wiring diagram above
-2. Open Arduino IDE → select board `Arduino Uno` → select correct COM port
-3. Upload `firmware/gesture_controller.ino`
-4. Open Serial Monitor at 9600 baud and verify distance readings appear when hand is within 8cm
-
-### Software
+Requires the ESP32 board core, plus the `NimBLE-Arduino`, `Adafruit_VL53L0X` and `FastLED`
+libraries.
 
 ```bash
-git clone https://github.com/yourusername/SPARC.git
-cd SPARC
-pip install -r requirements.txt
+arduino-cli compile --fqbn esp32:esp32:esp32 --port /dev/cu.usbserial-0001 --upload sketch_esp_hid
 ```
 
-Create a `.env` file in the project root:
+Then pair "SPARC" from your device's Bluetooth settings. That's the whole setup.
 
-```
-SPOTIFY_CLIENT_ID=your_client_id
-SPOTIFY_CLIENT_SECRET=your_client_secret
-SPOTIFY_REDIRECT_URI=http://localhost:8888/callback
-SERIAL_PORT=/dev/cu.usbmodem14201   # Windows: COM3
-FOCUS_PLAYLIST_URI=spotify:playlist:your_playlist_id
-```
-
-Run the backend:
-
-```bash
-python backend/main.py
-```
-
-On first run, a browser window will open for Spotify OAuth authentication. After authorizing, the token is cached locally and future runs connect automatically.
-
-### Auto-start on Login *(optional)*
-
-**macOS:** Add a launchd plist to `~/Library/LaunchAgents/`  
-**Windows:** Add the script to Task Scheduler with a "On log on" trigger  
-**Linux:** Add `@reboot python /path/to/main.py` to crontab
+> A BLE device stops advertising while connected. To pair it to something else, disconnect
+> — or **forget** it — on the current device first, or it won't be discoverable.
 
 ---
 
-## Project Structure
+## Repo layout
 
-```
-gesturefm/
-├── firmware/
-│   └── gesture_controller.ino   # Arduino C++ firmware
-├── backend/
-│   ├── main.py                  # Serial listener + Spotify integration
-│   ├── spotify_client.py        # Spotipy wrapper
-│   ├── logger.py                # SQLite gesture logging
-│   └── dashboard.py             # Flask analytics dashboard (optional)
-├── audio/
-│   ├── connected.wav
-│   └── disconnected.wav
-├── requirements.txt
-├── .env.example
-└── README.md
-```
+| Path | |
+|---|---|
+| `sketch_esp_hid/` | **The product.** BLE HID firmware |
+| `sketch_esp/` | Older firmware that talks to the desktop app over Bluetooth Serial |
+| `Main.py`, `ui.py`, `core.py` | Desktop app — demo only, see below |
+| `Wired_version/`, `Uno_version/`, `sketch_nano/` | Earlier hardware revisions, kept for reference |
+
+**The desktop app is a demo artifact, not part of the product.** It shows album art, a queue
+wheel and gesture animations, but it needs the Spotify Web API — which is exactly the
+limitation the HID firmware exists to escape. It only works with `sketch_esp/` firmware
+flashed; the two builds are mutually exclusive.
 
 ---
 
-## Analytics Dashboard *(optional)*
+## Project timeline
 
-When enabled, a local Flask server at `http://localhost:5000` displays:
+What we tried, what broke, and what we changed.
 
-- Total gestures by type (today / all time)
-- Hourly activity heatmap
-- Focus mode session history and duration
-- Most-skipped time of day
+| Stage | Problem | Fix |
+|---|---|---|
+| **Proximity volume** | Mapping hand *distance* to volume was buggy and misread hand position constantly. Roughly a full day lost to it. | Scrapped continuous tracking for discrete swipes — single pass, double pass, hold. |
+| **USB tether** | The board had to stay plugged into the laptop, so it wasn't really a remote. | Went wireless. Tried WiFi first, settled on Bluetooth with an HC-05. |
+| **HC-05 on macOS** | Pairing and holding a stable serial connection took a lot of troubleshooting. | Worked through the port/pairing issues, then moved to an ESP32 — its built-in radio removed the separate module entirely. |
+| **Terminal window** | The packaged executable still opened a terminal on launch. Not a product. | Built a proper macOS `.app` with a status UI and gesture animations. |
+| **Spotify API cap** ⚠️ | Spotify cut Development Mode to **5 users** in Feb 2026 and required Premium. Extended quota has been organisations-only since May 2025 — no application path for us. **Hard ceiling on the entire product.** | Stopped using the API. Became a **BLE HID device** instead, so the OS routes the commands. Removed the user cap, the Premium requirement, and the app install in one change — and made iPhone possible for the first time, since iOS never supported the old Bluetooth Serial transport. |
+
+### Along the way
+
+- **Leaked credentials.** Early commits contained Spotify tokens. Moved to `.env`, gitignored, purged from history.
+- **Sensor took the whole board down.** On a cold power-up the VL53L0X is still booting when `begin()` runs. Failing silently wedged `setup()`, so Bluetooth never came up and the board looked dead. Now it retries five times and carries on regardless.
+- **The on-screen keyboard trap.** Off-the-shelf ESP32 HID libraries declare themselves as keyboards, which makes iOS hide the on-screen keyboard system-wide — you couldn't type in any app while SPARC was connected. Fixed by hand-writing a report descriptor that declares media keys *only*.
 
 ---
 
-## Built With
+## What's next
 
-- [Arduino](https://www.arduino.cc/) — embedded firmware platform
-- [Spotipy](https://spotipy.readthedocs.io/) — Spotify Web API Python library
-- [pyserial](https://pyserial.readthedocs.io/) — Python Serial communication
-- [Flask](https://flask.palletsprojects.com/) — analytics dashboard
-
----
-
-## Authors
-
-**[Your Name]** — Hardware & Firmware (Arduino C++)  
-**[Partner's Name]** — Software & Backend (Python, Spotify API)
+- Solder onto perfboard, ditch the breadboard
+- Build a case
+- A pairing gesture, so switching between devices doesn't mean digging through Bluetooth settings
 
 ---
 
 ## License
 
-MIT License — see `LICENSE` for details.
+MIT
