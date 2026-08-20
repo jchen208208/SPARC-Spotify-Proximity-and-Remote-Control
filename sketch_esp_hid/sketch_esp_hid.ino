@@ -84,10 +84,12 @@ const float ZONE2_MAX = 30.0;  // Zone 2: 15-30cm → volume control
 // Gesture timing
 const unsigned long HOLD_TIME = 300;
 const unsigned long DOUBLE_PASS_WINDOW = 800;
-const unsigned long READ_INTERVAL = 25;
 
-// 6 consecutive out-of-range readings (150ms) required to confirm hand is gone
-const int OUT_OF_RANGE_THRESHOLD = 6;
+// Time, not sample count: the VL53L0X's blocking read paces the loop, so a fixed
+// number of samples drifts with the sensor's timing budget.
+// Long enough to ride out a dropout mid-wave, short enough that two quick waves are
+// still seen as two passes rather than one continuous hold.
+const unsigned long OUT_OF_RANGE_MS = 100;
 
 // Non-blocking LED flash
 int flashPin = -1;
@@ -98,6 +100,10 @@ bool handInZone = false;
 int handZone = 0;
 unsigned long handEntryTime = 0;
 bool holdFired = false;
+
+// Tracked across a whole pass so the zone is decided by closest approach, not by
+// whatever single reading happened to arrive first.
+float passMinDist = 999;
 
 int passCount = 0;
 int passZone = 0;
@@ -125,8 +131,7 @@ unsigned long lastFrame = 0;
 int volumeSteps = 0;
 const int MAX_VOLUME_STEPS = 20;
 
-int outOfRangeCount = 0;
-unsigned long lastReadTime = 0;
+unsigned long outOfRangeSince = 0;
 
 // False if the VL53L0X never came up. Gestures stop working, but Bluetooth keeps
 // running so the board still pairs and looks alive, rather than going dark.
@@ -136,7 +141,7 @@ float readDistanceCm() {
   if (!sensorReady) return -1;             // never poke a sensor that isn't there
   VL53L0X_RangingMeasurementData_t measure;
   lox.rangingTest(&measure, false);
-  if (measure.RangeStatus == 4) return -1; // out of range / invalid
+  if (measure.RangeStatus != 0) return -1; // 0 is the only valid status; 1,2,3,5 return garbage
   return measure.RangeMilliMeter / 10.0;   // mm → cm
 }
 
@@ -374,6 +379,13 @@ void setup() {
     sensorReady = lox.begin();
     if (!sensorReady) delay(200);
   }
+  // Gestures only need to tell 2-15cm from 15-30cm, so trade accuracy for rate: a
+  // fast wave across a narrow IR beam was landing in the gaps between samples.
+  if (sensorReady) {
+    lox.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED);
+    lox.setMeasurementTimingBudgetMicroSeconds(20000);
+  }
+
   Serial.println(sensorReady
                    ? "VL53L0X ready"
                    : "VL53L0X NOT FOUND - check wiring (SDA=21, SCL=22, 3V3, GND)");
@@ -395,7 +407,7 @@ void loop() {
     flashPin = -1;
     resetGestureState();
     handInZone = false;
-    outOfRangeCount = 0;
+    outOfRangeSince = 0;
     wasConnected = false;
     Serial.println("BLE disconnected");
   }
@@ -428,31 +440,32 @@ void loop() {
     setupAMS();
   }
 
-  if (millis() - lastReadTime < READ_INTERVAL) return;
-  lastReadTime = millis();
-
   handleFlash();
 
   float current = readDistanceCm();
   bool inZone = (current >= DETECT_MIN && current <= ZONE2_MAX);
 
-  if (inZone) {
-    outOfRangeCount = 0;
-  } else {
-    outOfRangeCount++;
-  }
-  bool handConfirmedGone = (!inZone && outOfRangeCount >= OUT_OF_RANGE_THRESHOLD);
+  if (inZone) outOfRangeSince = 0;
+  else if (outOfRangeSince == 0) outOfRangeSince = millis();
+  bool handConfirmedGone = (!inZone && outOfRangeSince != 0 &&
+                            millis() - outOfRangeSince >= OUT_OF_RANGE_MS);
 
   if (inZone && !handInZone) {
     handInZone = true;
     handEntryTime = millis();
     holdFired = false;
-    handZone = (current <= ZONE1_MAX) ? 1 : 2;
+    passMinDist = current;
   }
 
   else if (handConfirmedGone && handInZone) {
     handInZone = false;
-    outOfRangeCount = 0;
+    outOfRangeSince = 0;
+
+    // Closest approach over the whole pass decides the zone. Taking it from the single
+    // reading at entry meant one noisy sample near 15cm flipped a zone-1 wave into
+    // zone 2, breaking the double-pass match so PREV came out as NEXT.
+    handZone = (passMinDist <= ZONE1_MAX) ? 1 : 2;
+    passMinDist = 999;
 
     if (!holdFired && !volumeActive) {
       if (passCount == 0) {
@@ -480,6 +493,8 @@ void loop() {
   }
 
   else if (inZone && handInZone) {
+    if (current < passMinDist) passMinDist = current;
+
     if (!holdFired && millis() - handEntryTime >= HOLD_TIME) {
       // The app used to make this call: a hold during a volume ramp stops the
       // ramp rather than toggling playback.
