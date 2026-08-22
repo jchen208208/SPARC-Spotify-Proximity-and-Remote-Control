@@ -76,10 +76,27 @@ float amsDuration = 0;
 int amsState = 0;        // 0 paused, 1 playing, 2 rewinding, 3 fast-forwarding
 unsigned long amsAnchor = 0;
 
-// Zone boundaries in cm
+// Zone boundaries in cm. Auto-calibrated: whatever's parked within 1m of the
+// sensor for 5+ seconds becomes the "back wall," and the space in front of it
+// splits evenly into zone 1 (near, track control) and zone 2 (far, volume).
+// Falls back to a fixed 15/30cm split when nothing is sitting in range.
 const float DETECT_MIN = 2.0;
-const float ZONE1_MAX = 15.0;  // Zone 1: 2-15cm  → track control
-const float ZONE2_MAX = 30.0;  // Zone 2: 15-30cm → volume control
+const float DEFAULT_ZONE1_MAX = 15.0;
+const float DEFAULT_ZONE2_MAX = 30.0;
+float zone1Max = DEFAULT_ZONE1_MAX;  // Zone 1: DETECT_MIN..zone1Max → track control
+float zone2Max = DEFAULT_ZONE2_MAX;  // Zone 2: zone1Max..zone2Max  → volume control
+
+// Calibration tuning
+const float CALIBRATION_RANGE = 100.0;          // only consider objects within 1m
+const float CALIBRATION_MIN = 10.0;             // ignore stable reads closer than this - more likely a resting hand than a backdrop
+const unsigned long CALIBRATION_HOLD_MS = 5000; // must sit still this long to lock in
+const float CALIBRATION_TOLERANCE = 3.0;        // cm of wobble still counted as "the same object"
+const unsigned long CALIB_LOSS_MS = 1000;       // debounce before reverting to default
+
+float calibRefDist = -1;
+unsigned long calibStableSince = 0;
+unsigned long calibNoObjectSince = 0;
+bool isCalibrated = false;
 
 // Gesture timing
 const unsigned long HOLD_TIME = 300;
@@ -133,6 +150,10 @@ const int MAX_VOLUME_STEPS = 20;
 
 unsigned long outOfRangeSince = 0;
 
+// Debug: periodic Serial dump of raw distance + current zone state.
+const unsigned long DEBUG_PRINT_INTERVAL = 200; // ms between prints - 5/sec is readable, doesn't flood
+unsigned long lastDebugPrint = 0;
+
 // False if the VL53L0X never came up. Gestures stop working, but Bluetooth keeps
 // running so the board still pairs and looks alive, rather than going dark.
 bool sensorReady = false;
@@ -143,6 +164,55 @@ float readDistanceCm() {
   lox.rangingTest(&measure, false);
   if (measure.RangeStatus != 0) return -1; // 0 is the only valid status; 1,2,3,5 return garbage
   return measure.RangeMilliMeter / 10.0;   // mm → cm
+}
+
+// Watches for something parked within 1m of the sensor. If it holds still long
+// enough, that becomes the new outer edge of the gesture range, split evenly
+// into zone 1 (near) and zone 2 (far). A hand gesturing through never holds
+// still for the full 5 seconds - its distance keeps changing, which restarts
+// the clock below - so normal use can't trigger this, only something left
+// sitting in front of the sensor (a monitor stand, a wall, a mug).
+void updateCalibration(float current) {
+  bool objectPresent = (current >= DETECT_MIN && current <= CALIBRATION_RANGE);
+
+  if (!objectPresent) {
+    // Nothing within 1m - debounce briefly (a single dropped sample shouldn't
+    // undo a calibration), then fall back to the fixed default zones.
+    if (calibNoObjectSince == 0) calibNoObjectSince = millis();
+    if (isCalibrated && millis() - calibNoObjectSince >= CALIB_LOSS_MS) {
+      zone1Max = DEFAULT_ZONE1_MAX;
+      zone2Max = DEFAULT_ZONE2_MAX;
+      isCalibrated = false;
+      Serial.println("No object within 1m - zones reset to default 15/30cm");
+    }
+    calibRefDist = -1;
+    calibStableSince = 0;
+    return;
+  }
+  calibNoObjectSince = 0;
+
+  float diff = current - calibRefDist;
+  if (diff < 0) diff = -diff;
+
+  if (calibRefDist < 0 || diff > CALIBRATION_TOLERANCE) {
+    // First sighting, or it moved enough that this isn't the same dwell - restart the clock.
+    calibRefDist = current;
+    calibStableSince = millis();
+    return;
+  }
+
+  calibRefDist = (calibRefDist * 0.9f) + (current * 0.1f); // smooth out sensor jitter
+
+  if (millis() - calibStableSince >= CALIBRATION_HOLD_MS && calibRefDist >= CALIBRATION_MIN) {
+    zone1Max = calibRefDist / 2.0f;
+    zone2Max = calibRefDist;
+    if (!isCalibrated) {
+      isCalibrated = true;
+      Serial.print("Zones calibrated to object at ");
+      Serial.print(calibRefDist);
+      Serial.println("cm");
+    }
+  }
 }
 
 void flashLed(int pin) {
@@ -379,11 +449,14 @@ void setup() {
     sensorReady = lox.begin();
     if (!sensorReady) delay(200);
   }
-  // Gestures only need to tell 2-15cm from 15-30cm, so trade accuracy for rate: a
-  // fast wave across a narrow IR beam was landing in the gaps between samples.
+  // Gestures used to only need 2-30cm, so a short timing budget traded range for
+  // speed. Calibration now needs to see out to 1m, and skin/clothing reflect IR
+  // far worse than a flat wall - the old high-speed config was losing signal
+  // (and returning invalid RangeStatus) well before that. Long-range mode lowers
+  // the signal-rate threshold to buy back distance; it's a little slower per
+  // sample, but still far faster than a hand-wave.
   if (sensorReady) {
-    lox.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED);
-    lox.setMeasurementTimingBudgetMicroSeconds(20000);
+    lox.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
   }
 
   Serial.println(sensorReady
@@ -408,8 +481,33 @@ void loop() {
     resetGestureState();
     handInZone = false;
     outOfRangeSince = 0;
+    zone1Max = DEFAULT_ZONE1_MAX;
+    zone2Max = DEFAULT_ZONE2_MAX;
+    calibRefDist = -1;
+    calibStableSince = 0;
+    calibNoObjectSince = 0;
+    isCalibrated = false;
     wasConnected = false;
     Serial.println("BLE disconnected");
+  }
+
+  float current = readDistanceCm();
+  updateCalibration(current);
+
+  if (millis() - lastDebugPrint >= DEBUG_PRINT_INTERVAL) {
+    lastDebugPrint = millis();
+    Serial.print("dist=");
+    if (current < 0) Serial.print("--");
+    else Serial.print(current);
+    Serial.print("cm  zone1=0-");
+    Serial.print(zone1Max);
+    Serial.print(" zone2=");
+    Serial.print(zone1Max);
+    Serial.print("-");
+    Serial.print(zone2Max);
+    Serial.print(isCalibrated ? "  [calibrated]" : "  [default]");
+    Serial.print(bleConnected ? "" : "  (not connected)");
+    Serial.println();
   }
 
   if (!bleConnected) return;
@@ -442,8 +540,7 @@ void loop() {
 
   handleFlash();
 
-  float current = readDistanceCm();
-  bool inZone = (current >= DETECT_MIN && current <= ZONE2_MAX);
+  bool inZone = (current >= DETECT_MIN && current <= zone2Max);
 
   if (inZone) outOfRangeSince = 0;
   else if (outOfRangeSince == 0) outOfRangeSince = millis();
@@ -464,7 +561,7 @@ void loop() {
     // Closest approach over the whole pass decides the zone. Taking it from the single
     // reading at entry meant one noisy sample near 15cm flipped a zone-1 wave into
     // zone 2, breaking the double-pass match so PREV came out as NEXT.
-    handZone = (passMinDist <= ZONE1_MAX) ? 1 : 2;
+    handZone = (passMinDist <= zone1Max) ? 1 : 2;
     passMinDist = 999;
 
     if (!holdFired && !volumeActive) {
