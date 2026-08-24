@@ -8,15 +8,20 @@ Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
 #include <FastLED.h>
 
-// Comment out to build for the perfboard (ESP32 devboard) instead. The PCB runs
-// the sensor, strip and LED on entirely different pins - see pcb_stuff/.
-#define BOARD_PCB_V1
+// Which board this build targets - see pcb/. The three run the sensor, strip and
+// LED on entirely different pins, so flashing the wrong one silently kills them.
+#define BOARD 2   // 2 = PCB v2, 1 = PCB v1 (the built board), 0 = perfboard
 
-#ifdef BOARD_PCB_V1
+#if BOARD == 2
   #define LED_PIN 15          // NeoPixel DIN, via R6
-  #define I2C_SDA 17          // schematic labels these the other way round;
-  #define I2C_SCL 16          // the board is actually wired SDA=17, SCL=16
+  #define I2C_SDA 16
+  #define I2C_SCL 17
   const int ledPause = 27;    // status LED, via R7
+#elif BOARD == 1
+  #define LED_PIN 15
+  #define I2C_SDA 17          // v1 has SDA/SCL swapped relative to v2 - the
+  #define I2C_SCL 16          // connector pins were reassigned in the v2 schematic
+  const int ledPause = 27;
 #else
   #define LED_PIN 18
   #define I2C_SDA 21
