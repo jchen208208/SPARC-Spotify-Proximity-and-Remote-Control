@@ -18,3 +18,9 @@ pcb_stuff/PCB_V1_NOTES.md
 # user, so committing it makes everyone else's KiCad think the project is still
 # open on someone else's machine.
 *.lck
+
+# VS Code Local History extension - per-machine snapshots of edits
+.history/
+
+# KiCad plot/print output artifact - no design content
+report.txt
