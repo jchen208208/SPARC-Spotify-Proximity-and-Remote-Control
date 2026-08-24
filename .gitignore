@@ -24,3 +24,9 @@ pcb_stuff/PCB_V1_NOTES.md
 
 # KiCad plot/print output artifact - no design content
 report.txt
+
+# Generated Gerber exports - regenerable from the .kicad_pcb, and dangerous to
+# keep around stale. The versioned .zip is committed instead as the record of
+# what was actually sent to the fab.
+pcb/gerbers/
+pcb/fab/
