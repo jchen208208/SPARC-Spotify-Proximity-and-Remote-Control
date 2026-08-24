@@ -8,12 +8,25 @@ Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
 #include <FastLED.h>
 
-#define LED_PIN 18
+// Comment out to build for the perfboard (ESP32 devboard) instead. The PCB runs
+// the sensor, strip and LED on entirely different pins - see pcb_stuff/.
+#define BOARD_PCB_V1
+
+#ifdef BOARD_PCB_V1
+  #define LED_PIN 15          // NeoPixel DIN, via R6
+  #define I2C_SDA 17          // schematic labels these the other way round;
+  #define I2C_SCL 16          // the board is actually wired SDA=17, SCL=16
+  const int ledPause = 27;    // status LED, via R7
+#else
+  #define LED_PIN 18
+  #define I2C_SDA 21
+  #define I2C_SCL 22
+  const int ledPause = 4;
+#endif
+
 #define NUMPIXELS 8
 
 CRGB leds[NUMPIXELS];
-
-const int ledPause = 4;
 
 // Consumer Control only - deliberately NO keyboard usage page. iOS hides the
 // on-screen keyboard system-wide for anything that declares itself a keyboard,
@@ -443,7 +456,7 @@ void setup() {
   adv->enableScanResponse(true);
   adv->start();
 
-  Wire.begin(21, 22); // SDA, SCL
+  Wire.begin(I2C_SDA, I2C_SCL);
 
   FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
   FastLED.setBrightness(10);
@@ -472,9 +485,9 @@ void setup() {
     lox.setMeasurementTimingBudgetMicroSeconds(20000);
   }
 
-  Serial.println(sensorReady
-                   ? "VL53L0X ready"
-                   : "VL53L0X NOT FOUND - check wiring (SDA=21, SCL=22, 3V3, GND)");
+  if (sensorReady) Serial.println("VL53L0X ready");
+  else Serial.printf("VL53L0X NOT FOUND - check wiring (SDA=%d, SCL=%d, 3V3, GND)\n",
+                     I2C_SDA, I2C_SCL);
 
   pinMode(ledPause, OUTPUT);
 
