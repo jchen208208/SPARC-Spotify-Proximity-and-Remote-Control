@@ -11,3 +11,5 @@ nohup.out
 # PyCharm settings are per-machine: misc.xml stores an absolute interpreter
 # path, so committing it makes each of us overwrite the others' interpreter.
 .idea/
+
+pcb_stuff/PCB_V1_NOTES.md
