@@ -488,7 +488,7 @@
     "pinned_symbol_libs": []
   },
   "meta": {
-    "filename": "sparc_pcb_v1.kicad_pro",
+    "filename": "sparc_pcb_v2.kicad_pro",
     "version": 3
   },
   "net_settings": {
@@ -662,12 +662,12 @@
     "subpart_id_separator": 0,
     "top_level_sheets": [
       {
-        "filename": "sparc_pcb_v1.kicad_sch",
-        "name": "Root",
+        "filename": "sparc_pcb_v2.kicad_sch",
+        "name": "sparc_pcb_v2",
         "uuid": "bf6587dd-6bae-4bd8-8934-a0c4ccecee43"
       }
     ],
-    "used_designators": "J1,Switch1,VL53L0X1,NeoPixel1,U1-7,C1-7,SW1-5,R1-7,BT1,D1,#PWR1-30,Header1,LDO1",
+    "used_designators": "J1,Switch1,VL53L0X1,NeoPixel1,U1-7,C1-7,SW1-5,D1,#PWR1-30,BT1,R1-7,Header1,LDO1",
     "variants": []
   },
   "sheets": [
