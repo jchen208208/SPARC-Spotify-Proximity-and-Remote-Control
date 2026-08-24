@@ -13,3 +13,8 @@ nohup.out
 .idea/
 
 pcb_stuff/PCB_V1_NOTES.md
+
+# KiCad writes a lock file while a project is open. It records the hostname and
+# user, so committing it makes everyone else's KiCad think the project is still
+# open on someone else's machine.
+*.lck
