@@ -92,6 +92,7 @@ const float CALIBRATION_MIN = 10.0;             // ignore stable reads closer th
 const unsigned long CALIBRATION_HOLD_MS = 5000; // must sit still this long to lock in
 const float CALIBRATION_TOLERANCE = 3.0;        // cm of wobble still counted as "the same object"
 const unsigned long CALIB_LOSS_MS = 1000;       // debounce before reverting to default
+const float CALIBRATION_MARGIN = 0.2;           // fraction of the backdrop distance kept clear above zone 2
 
 float calibRefDist = -1;
 unsigned long calibStableSince = 0;
@@ -204,8 +205,17 @@ void updateCalibration(float current) {
   calibRefDist = (calibRefDist * 0.9f) + (current * 0.1f); // smooth out sensor jitter
 
   if (millis() - calibStableSince >= CALIBRATION_HOLD_MS && calibRefDist >= CALIBRATION_MIN) {
-    zone1Max = calibRefDist / 2.0f;
-    zone2Max = calibRefDist;
+    // Stop the gesture range short of the backdrop. Parking zone2Max on the object
+    // itself put it right on the inclusive edge of inZone, so sensor jitter around
+    // calibRefDist read as a hand entering and leaving zone 2 with nothing there -
+    // spurious volume ramps and play/pause. The margin scales with distance because
+    // so does the noise.
+    // Never less than the wobble we already tolerate as "the same object", or a
+    // close backdrop would sit back inside the zone again.
+    float margin = calibRefDist * CALIBRATION_MARGIN;
+    if (margin < CALIBRATION_TOLERANCE) margin = CALIBRATION_TOLERANCE;
+    zone2Max = calibRefDist - margin;
+    zone1Max = zone2Max / 2.0f;
     if (!isCalibrated) {
       isCalibrated = true;
       Serial.print("Zones calibrated to object at ");
@@ -453,10 +463,13 @@ void setup() {
   // speed. Calibration now needs to see out to 1m, and skin/clothing reflect IR
   // far worse than a flat wall - the old high-speed config was losing signal
   // (and returning invalid RangeStatus) well before that. Long-range mode lowers
-  // the signal-rate threshold to buy back distance; it's a little slower per
-  // sample, but still far faster than a hand-wave.
+  // the signal-rate threshold to buy back distance.
+  // The budget is still pinned back down afterwards (configSensor sets its own):
+  // long-range's default is slow enough that a fast wave lands in the gaps between
+  // samples again, which is the bug the 20ms budget was here to fix.
   if (sensorReady) {
     lox.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
+    lox.setMeasurementTimingBudgetMicroSeconds(20000);
   }
 
   Serial.println(sensorReady
