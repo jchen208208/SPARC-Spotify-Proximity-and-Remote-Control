@@ -3094,7 +3094,7 @@
 			)
 		)
 		(property "Value" "10k"
-			(at 0 1.83 0)
+			(at -2.5 1.83 0)
 			(layer "F.Fab")
 			(uuid "8ece1025-982c-4e92-a083-a921e19bb2d1")
 			(effects
@@ -4240,7 +4240,7 @@
 		(descr "Resistor SMD 1206 (3216 Metric), square (rectangular) end terminal, IPC-7351 nominal with elongated pad for handsoldering. (Body size source: IPC-SM-782 page 72, https://www.pcb-3d.com/wordpress/wp-content/uploads/ipc-sm-782a_amendment_1_and_2.pdf)")
 		(tags "resistor handsolder")
 		(property "Reference" "R9"
-			(at 0 1.83 0)
+			(at -3.95 -0.5 0)
 			(layer "B.SilkS")
 			(uuid "823cc5c2-f458-4dd9-be87-5abc0ac9a9f3")
 			(effects
@@ -4252,7 +4252,7 @@
 			)
 		)
 		(property "Value" "4.7k"
-			(at 0 -1.83 0)
+			(at -4.45 -2 0)
 			(layer "B.Fab")
 			(uuid "22c874e7-0ffc-4dfb-8458-caed718d8a9b")
 			(effects
@@ -5376,7 +5376,7 @@
 		(descr "Resistor SMD 1206 (3216 Metric), square (rectangular) end terminal, IPC-7351 nominal with elongated pad for handsoldering. (Body size source: IPC-SM-782 page 72, https://www.pcb-3d.com/wordpress/wp-content/uploads/ipc-sm-782a_amendment_1_and_2.pdf)")
 		(tags "resistor handsolder")
 		(property "Reference" "R8"
-			(at 0 1.83 0)
+			(at -4.05 -0.5 0)
 			(layer "B.SilkS")
 			(uuid "db1ec163-833e-4537-880f-dd2621da6085")
 			(effects
@@ -5388,7 +5388,7 @@
 			)
 		)
 		(property "Value" "4.7k"
-			(at 0 -1.83 0)
+			(at -4.05 -1.83 0)
 			(layer "B.Fab")
 			(uuid "93c67ab3-cd32-4f5a-8f84-8523571e5759")
 			(effects
@@ -5801,12 +5801,12 @@
 		(uuid "31afdc8b-4735-469c-9798-9bdab1fdc8a6")
 	)
 	(segment
-		(start 144.26 92)
+		(start 144.26 91.889999)
 		(end 144.26 91.2275)
 		(width 0.25)
 		(layer "F.Cu")
 		(net "TP4056 OUT+")
-		(uuid "3a0ecb26-b9e7-43aa-96b2-df94d1c12427")
+		(uuid "43a6674c-95a9-4d0d-aa3e-c229bb2f9693")
 	)
 	(segment
 		(start 133.93 108.14)
@@ -5830,7 +5830,7 @@
 		(width 0.25)
 		(layer "F.Cu")
 		(net "TP4056 OUT+")
-		(uuid "4d6dd7a4-e14a-4ca1-a1d1-dc5c9ddd3471")
+		(uuid "4a710390-b1d5-46ef-9a81-2237698f284d")
 	)
 	(segment
 		(start 146.16 91.2275)
@@ -5838,7 +5838,7 @@
 		(width 0.25)
 		(layer "F.Cu")
 		(net "TP4056 OUT+")
-		(uuid "500648ae-3201-409a-90cc-19fd71957adb")
+		(uuid "5110b4eb-7c56-48f2-b0a7-e77d446a35ab")
 	)
 	(segment
 		(start 143.5675 94.6625)
@@ -5847,14 +5847,6 @@
 		(layer "F.Cu")
 		(net "TP4056 OUT+")
 		(uuid "5d3a52a0-1214-406d-94b1-b3ee076e3fcd")
-	)
-	(segment
-		(start 144.475 92.215)
-		(end 144.26 92)
-		(width 0.25)
-		(layer "F.Cu")
-		(net "TP4056 OUT+")
-		(uuid "5f00f1ee-044e-4698-b31f-f4d4aa8562d3")
 	)
 	(segment
 		(start 135.6 106.47)
@@ -5882,11 +5874,11 @@
 	)
 	(segment
 		(start 145.560908 92.215)
-		(end 144.475 92.215)
+		(end 144.585001 92.215)
 		(width 0.25)
 		(layer "F.Cu")
 		(net "TP4056 OUT+")
-		(uuid "b181117e-0c7e-4d7f-93cf-80724af9e72a")
+		(uuid "afe6bb88-25a3-43c9-b04f-764156dd88da")
 	)
 	(segment
 		(start 135.6 98.72)
@@ -5903,6 +5895,14 @@
 		(layer "F.Cu")
 		(net "TP4056 OUT+")
 		(uuid "d76fec7d-621e-4810-8d5a-c3ad5236c925")
+	)
+	(segment
+		(start 144.585001 92.215)
+		(end 144.26 91.889999)
+		(width 0.25)
+		(layer "F.Cu")
+		(net "TP4056 OUT+")
+		(uuid "e2cc766e-4382-4235-b0c5-621eeef0d7f1")
 	)
 	(segment
 		(start 139.6575 94.6625)
