@@ -94,15 +94,13 @@ float amsDuration = 0;
 int amsState = 0;        // 0 paused, 1 playing, 2 rewinding, 3 fast-forwarding
 unsigned long amsAnchor = 0;
 
-// Zone boundaries in cm. Auto-calibrated: whatever's parked within 1m of the
-// sensor for 5+ seconds becomes the "back wall," and the space in front of it
-// splits evenly into zone 1 (near, track control) and zone 2 (far, volume).
-// Falls back to a fixed 15/30cm split when nothing is sitting in range.
+// Zone boundary in cm. Auto-calibrated: whatever's parked within 1m of the
+// sensor for 5+ seconds becomes the "back wall," and the gesture zone runs
+// from the sensor out to just short of it.
+// Falls back to a fixed 30cm boundary when nothing is sitting in range.
 const float DETECT_MIN = 2.0;
-const float DEFAULT_ZONE1_MAX = 15.0;
-const float DEFAULT_ZONE2_MAX = 30.0;
-float zone1Max = DEFAULT_ZONE1_MAX;  // Zone 1: DETECT_MIN..zone1Max → track control
-float zone2Max = DEFAULT_ZONE2_MAX;  // Zone 2: zone1Max..zone2Max  → volume control
+const float DEFAULT_ZONE_MAX = 30.0;
+float zoneMax = DEFAULT_ZONE_MAX;  // Zone: DETECT_MIN..zoneMax → all gestures
 
 // Calibration tuning
 const float CALIBRATION_RANGE = 100.0;          // only consider objects within 1m
@@ -133,23 +131,26 @@ unsigned long flashStart = 0;
 const unsigned long FLASH_DURATION = 150;
 
 bool handInZone = false;
-int handZone = 0;
 unsigned long handEntryTime = 0;
 bool holdFired = false;
 
-// Tracked across a whole pass so the zone is decided by closest approach, not by
-// whatever single reading happened to arrive first.
-float passMinDist = 999;
+// Tracked across the hold window to tell a steady press from a drifting one -
+// see the HOLD_TIME check below.
+float handMinDist = 999;
+float handMaxDist = -999;
 
 int passCount = 0;
-int passZone = 0;
 unsigned long firstPassExitTime = 0;
 
-// When volume is actively ramping, block all pass gestures
+// Volume mode: entered when a hold drifts instead of staying steady (see the
+// HOLD_TIME check below). While active, hand movement acts as a slider - this
+// many cm of travel sends one volume step in that direction.
 bool volumeActive = false;
-bool volumeUp = false;
-unsigned long lastVolumeTick = 0;
-const unsigned long VOLUME_INTERVAL = 200;
+float volumeRefDist = 0;
+const float VOLUME_CM_PER_STEP = 0.5;
+// How much a held hand must move within HOLD_TIME to count as drifting into
+// volume mode rather than sitting steady for play/pause.
+const float VOLUME_DRIFT_CM = 5.0;
 
 // The strip can't show the host's volume - nothing comes back over HID to read, and
 // an open-loop estimate desyncs the moment the user touches the volume themselves.
@@ -161,12 +162,6 @@ const unsigned long ANIM_STEP = 45;   // ms per LED
 const unsigned long PULSE_MS = 320;
 const unsigned long FRAME_MS = 20;    // cap redraws; WS2812B writes are not free
 unsigned long lastFrame = 0;
-
-// Nothing tells us when the host hits max/min, so bound the ramp ourselves.
-// macOS and iOS cover the full range in 16 presses.
-int volumeSteps = 0;
-const int MAX_VOLUME_STEPS = 20;
-
 unsigned long outOfRangeSince = 0;
 
 // Debug: periodic Serial dump of raw distance + current zone state.
@@ -196,13 +191,12 @@ void updateCalibration(float current) {
 
   if (!objectPresent) {
     // Nothing within 1m - debounce briefly (a single dropped sample shouldn't
-    // undo a calibration), then fall back to the fixed default zones.
+    // undo a calibration), then fall back to the fixed default zone.
     if (calibNoObjectSince == 0) calibNoObjectSince = millis();
     if (isCalibrated && millis() - calibNoObjectSince >= CALIB_LOSS_MS) {
-      zone1Max = DEFAULT_ZONE1_MAX;
-      zone2Max = DEFAULT_ZONE2_MAX;
+      zoneMax = DEFAULT_ZONE_MAX;
       isCalibrated = false;
-      Serial.println("No object within 1m - zones reset to default 15/30cm");
+      Serial.println("No object within 1m - zone reset to default 30cm");
     }
     calibRefDist = -1;
     calibStableSince = 0;
@@ -223,17 +217,15 @@ void updateCalibration(float current) {
   calibRefDist = (calibRefDist * 0.9f) + (current * 0.1f); // smooth out sensor jitter
 
   if (millis() - calibStableSince >= CALIBRATION_HOLD_MS && calibRefDist >= CALIBRATION_MIN) {
-    // Stop the gesture range short of the backdrop. Parking zone2Max on the object
+    // Stop the gesture range short of the backdrop. Parking zoneMax on the object
     // itself put it right on the inclusive edge of inZone, so sensor jitter around
-    // calibRefDist read as a hand entering and leaving zone 2 with nothing there -
-    // spurious volume ramps and play/pause. The margin scales with distance because
-    // so does the noise.
+    // calibRefDist read as a hand entering and leaving the zone with nothing there -
+    // spurious gestures. The margin scales with distance because so does the noise.
     // Never less than the wobble we already tolerate as "the same object", or a
     // close backdrop would sit back inside the zone again.
     float margin = calibRefDist * CALIBRATION_MARGIN;
     if (margin < CALIBRATION_TOLERANCE) margin = CALIBRATION_TOLERANCE;
-    zone2Max = calibRefDist - margin;
-    zone1Max = zone2Max / 2.0f;
+    zoneMax = calibRefDist - margin;
     if (!isCalibrated) {
       isCalibrated = true;
       Serial.print("Zones calibrated to object at ");
@@ -512,8 +504,7 @@ void loop() {
     resetGestureState();
     handInZone = false;
     outOfRangeSince = 0;
-    zone1Max = DEFAULT_ZONE1_MAX;
-    zone2Max = DEFAULT_ZONE2_MAX;
+    zoneMax = DEFAULT_ZONE_MAX;
     calibRefDist = -1;
     calibStableSince = 0;
     calibNoObjectSince = 0;
@@ -530,12 +521,8 @@ void loop() {
     Serial.print("dist=");
     if (current < 0) Serial.print("--");
     else Serial.print(current);
-    Serial.print("cm  zone1=0-");
-    Serial.print(zone1Max);
-    Serial.print(" zone2=");
-    Serial.print(zone1Max);
-    Serial.print("-");
-    Serial.print(zone2Max);
+    Serial.print("cm  zone=0-");
+    Serial.print(zoneMax);
     Serial.print(isCalibrated ? "  [calibrated]" : "  [default]");
     Serial.print(bleConnected ? "" : "  (not connected)");
     Serial.println();
@@ -545,12 +532,6 @@ void loop() {
 
   // The Python app used to run this ramp and stop it with "VS"; the board owns
   // it now, so it also owns deciding when to stop.
-  if (volumeActive && millis() - lastVolumeTick >= VOLUME_INTERVAL) {
-    lastVolumeTick = millis();
-    sendMediaKey(volumeUp ? KEY_VOL_UP : KEY_VOL_DOWN, volumeUp ? "VOL+" : "VOL-");
-    if (++volumeSteps >= MAX_VOLUME_STEPS) volumeActive = false;
-  }
-
   if (!volumeActive && (anim == ANIM_VOL_UP || anim == ANIM_VOL_DN)) {
     anim = ANIM_NONE;
     stripOff();
@@ -571,7 +552,7 @@ void loop() {
 
   handleFlash();
 
-  bool inZone = (current >= DETECT_MIN && current <= zone2Max);
+  bool inZone = (current >= DETECT_MIN && current <= zoneMax);
 
   if (inZone) outOfRangeSince = 0;
   else if (outOfRangeSince == 0) outOfRangeSince = millis();
@@ -582,73 +563,76 @@ void loop() {
     handInZone = true;
     handEntryTime = millis();
     holdFired = false;
-    passMinDist = current;
+    handMinDist = current;
+    handMaxDist = current;
   }
 
   else if (handConfirmedGone && handInZone) {
     handInZone = false;
     outOfRangeSince = 0;
+    volumeActive = false;
+    handMinDist = 999;
+    handMaxDist = -999;
 
-    // Closest approach over the whole pass decides the zone. Taking it from the single
-    // reading at entry meant one noisy sample near 15cm flipped a zone-1 wave into
-    // zone 2, breaking the double-pass match so PREV came out as NEXT.
-    handZone = (passMinDist <= zone1Max) ? 1 : 2;
-    passMinDist = 999;
-
-    if (!holdFired && !volumeActive) {
+    // A dwell that reached HOLD_TIME was a hold (play/pause or volume mode),
+    // not a pass - only count it toward next/prev if the hand left before that.
+    if (!holdFired) {
       if (passCount == 0) {
         passCount = 1;
-        passZone = handZone;
         firstPassExitTime = millis();
-      } else if (passCount == 1 && handZone == passZone && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
-        if (passZone == 1) {
-          sendMediaKey(KEY_PREV, "PREV");
-          startAnim(ANIM_PREV);
-        } else {
-          volumeUp = false;
-          volumeActive = true;
-          volumeSteps = 0;
-          lastVolumeTick = 0;
-          startAnim(ANIM_VOL_DN);
-        }
+      } else if (passCount == 1 && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
+        sendMediaKey(KEY_PREV, "PREV");
+        startAnim(ANIM_PREV);
         passCount = 0;
       } else {
         passCount = 1;
-        passZone = handZone;
         firstPassExitTime = millis();
       }
     }
   }
 
   else if (inZone && handInZone) {
-    if (current < passMinDist) passMinDist = current;
+    if (!holdFired) {
+      if (current < handMinDist) handMinDist = current;
+      if (current > handMaxDist) handMaxDist = current;
 
-    if (!holdFired && millis() - handEntryTime >= HOLD_TIME) {
-      // The app used to make this call: a hold during a volume ramp stops the
-      // ramp rather than toggling playback.
-      if (volumeActive) {
-        volumeActive = false;
-      } else {
-        sendMediaKey(KEY_PLAY_PAUSE, "PLAY/PAUSE");
-        startAnim(ANIM_PULSE);
+      if (millis() - handEntryTime >= HOLD_TIME) {
+        holdFired = true;
+        resetGestureState();
+        // Steady for the whole hold -> play/pause. Drifted during it -> the
+        // hand meant to slide, so switch to volume mode instead.
+        if (handMaxDist - handMinDist >= VOLUME_DRIFT_CM) {
+          volumeActive = true;
+          volumeRefDist = current;
+        } else {
+          sendMediaKey(KEY_PLAY_PAUSE, "PLAY/PAUSE");
+          startAnim(ANIM_PULSE);
+          flashLed(ledPause);
+        }
       }
-      flashLed(ledPause);
-      holdFired = true;
-      resetGestureState();
+    } else if (volumeActive) {
+      // Volume mode: the hand is a slider from here on. Every VOLUME_CM_PER_STEP
+      // of travel sends one step in that direction; the reference point moves
+      // with it so movement past a step is picked up on the next loop.
+      float delta = current - volumeRefDist;
+      while (delta >= VOLUME_CM_PER_STEP) {
+        sendMediaKey(KEY_VOL_UP, "VOL+");
+        startAnim(ANIM_VOL_UP);
+        volumeRefDist += VOLUME_CM_PER_STEP;
+        delta -= VOLUME_CM_PER_STEP;
+      }
+      while (delta <= -VOLUME_CM_PER_STEP) {
+        sendMediaKey(KEY_VOL_DOWN, "VOL-");
+        startAnim(ANIM_VOL_DN);
+        volumeRefDist -= VOLUME_CM_PER_STEP;
+        delta += VOLUME_CM_PER_STEP;
+      }
     }
   }
 
-  if (!handInZone && passCount == 1 && !volumeActive && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
-    if (passZone == 1) {
-      sendMediaKey(KEY_NEXT, "NEXT");
-      startAnim(ANIM_NEXT);
-    } else {
-      volumeUp = true;
-      volumeActive = true;
-      volumeSteps = 0;
-      lastVolumeTick = 0;
-      startAnim(ANIM_VOL_UP);
-    }
+  if (!handInZone && passCount == 1 && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
+    sendMediaKey(KEY_NEXT, "NEXT");
+    startAnim(ANIM_NEXT);
     passCount = 0;
   }
 }
