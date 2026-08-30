@@ -126,12 +126,13 @@ bool holdFired = false;
 int passCount = 0;
 unsigned long firstPassExitTime = 0;
 
-// Volume mode: entered when a hold drifts instead of staying steady. while active, hand movement acts as a slider: <this many> cm of travel sends one volume step in that direction.
+// Volume mode: entered when no steady hold for a period of time. while active, hand movement acts as a slider: <this many> cm of travel sends one volume step in that direction.
 bool volumeActive = false;
 float volumeRefDist = 0;  // distance we're measuring movement from
-const float VOLUME_CM_PER_STEP = 0.5;  // 0.5 cm = 1 volum block
+const float VOLUME_CM_PER_STEP = 1.75;  // 1.75 cm = 1 volume step
 // How long to wait to enter volume mode
 const unsigned long VOLUME_ENTER_MS = 600;
+unsigned long lastVolumeStep = 0;  // stores the last time a volume signal was sent
 
 // used to detect volume mode entry
 unsigned long stillSince = 0;
@@ -661,17 +662,19 @@ void loop() {
     // volume block
     else if (volumeActive) {
       float delta = current - volumeRefDist;
-      while (delta >= VOLUME_CM_PER_STEP) {
+      
+      // send a volume signal once every 100ms so that one loop() iteration doesn't handle too many volume calls (since each sendMediaKey has a 15ms delay)
+      if (delta >= VOLUME_CM_PER_STEP && millis() - lastVolumeStep >= 100) {
         sendMediaKey(KEY_VOL_UP, "VOL+");
         startAnim(ANIM_VOL_UP);
         volumeRefDist += VOLUME_CM_PER_STEP;
-        delta -= VOLUME_CM_PER_STEP;
+        lastVolumeStep = millis();
       }
-      while (delta <= -VOLUME_CM_PER_STEP) {
+      else if (delta <= -VOLUME_CM_PER_STEP && millis() - lastVolumeStep >= 100) {
         sendMediaKey(KEY_VOL_DOWN, "VOL-");
         startAnim(ANIM_VOL_DN);
         volumeRefDist -= VOLUME_CM_PER_STEP;
-        delta += VOLUME_CM_PER_STEP;
+        lastVolumeStep = millis();
       }
     }
   }
