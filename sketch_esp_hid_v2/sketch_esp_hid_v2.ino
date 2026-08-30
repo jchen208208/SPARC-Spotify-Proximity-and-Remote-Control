@@ -123,10 +123,6 @@ bool handInZone = false;
 unsigned long handEntryTime = 0;
 bool holdFired = false;
 
-// tracked across the hold window to differentiate between a steady pass and an unsteady one
-float handMinDist = 999;
-float handMaxDist = -999;
-
 int passCount = 0;
 unsigned long firstPassExitTime = 0;
 
@@ -135,7 +131,13 @@ bool volumeActive = false;
 float volumeRefDist = 0;  // distance we're measuring movement from
 const float VOLUME_CM_PER_STEP = 0.5;  // 0.5 cm = 1 volum block
 // How much a held hand must move within HOLD_TIME to count as drifting into volume mode rather than sitting steady for play/pause.
-const float VOLUME_DRIFT_CM = 5.0;
+const unsigned long VOLUME_ENTER_MS = 600;
+
+// used to detect volume mode entry
+unsigned long stillSince = 0;
+float prevDistance = 0;
+float MOVE_NOISE = 0.75;
+const unsigned long GRACE_MS = 150;  // short delay before any hold can fire
 
 // animation enums
 enum Anim {ANIM_NONE, ANIM_NEXT, ANIM_PREV, ANIM_PULSE, ANIM_VOL_UP, ANIM_VOL_DN};
@@ -606,16 +608,14 @@ void loop() {
     handInZone = true;
     handEntryTime = millis();
     holdFired = false;
-    handMinDist = current;
-    handMaxDist = current;
+    stillSince = millis();
+    prevDistance = current;
   }
 
   else if (handConfirmedGone && handInZone) {  // hand just left
     handInZone = false;
     outOfRangeSince = 0;
     volumeActive = false;
-    handMinDist = 999;
-    handMaxDist = -999;
 
     // distinguishing between a play/pause and a next/previous
     if (!holdFired) {  // only counts as a pass if it left before 300ms
@@ -637,25 +637,28 @@ void loop() {
 
   else if (inZone && handInZone) {
     if (!holdFired) {
-      if (current < handMinDist) {
-        handMinDist = current;
-      }
-      if (current > handMaxDist) {
-        handMaxDist = current;
+      // if there's movement, update stillSince
+      if (current - prevDistance > MOVE_NOISE || prevDistance - current > MOVE_NOISE) {
+        stillSince = millis();
+        prevDistance = current;
       }
 
-      if (millis() - handEntryTime >= HOLD_TIME) {
-        holdFired = true;
-        resetGestureState();
-        // steady hold = play/pause. unsteady hold = volume mode
-        if (handMaxDist - handMinDist >= VOLUME_DRIFT_CM) {
-          volumeActive = true;
-          volumeRefDist = current;
-        }
-        else {
+      // a short 150ms delay where neither pause/play or volume mode can fire
+      if (millis() - handEntryTime >= GRACE_MS) {
+        // if it's been 300ms since the last movement
+        if (millis() - stillSince >= HOLD_TIME) {  // steady hold = play/pause. if hand is held still, play/pause will always fire before volume mode is entered
+          holdFired = true;
+          resetGestureState();
           sendMediaKey(KEY_PLAY_PAUSE, "PLAY/PAUSE");
           startAnim(ANIM_PULSE);
           flashLed(ledPause);
+        }
+        // if it's been 600ms and nothing's been held still for 300ms at a time
+        else if (millis() - handEntryTime >= VOLUME_ENTER_MS) {  // unsteady hold = volume mode
+          holdFired = true;
+          resetGestureState();
+          volumeActive = true;
+          volumeRefDist = current;
         }
       }
     }
