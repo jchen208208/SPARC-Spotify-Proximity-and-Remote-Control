@@ -70,7 +70,7 @@ const unsigned long KEY_HOLD_MS = 15;
 NimBLEHIDDevice *hid = nullptr;
 NimBLECharacteristic *inputReport = nullptr;  // the channel that transports the input byte
 NimBLEServer *pServer = nullptr;
-volatile bool bleConnected = false;  // volatine means the variable can change without the code inside main() touching it
+volatile bool bleConnected = false;  // volatile means the variable can change without the code inside main() touching it
 volatile bool authDone = false;
 volatile uint16_t connHandle = 0;
 bool wasConnected = false;  // if (bleConnected && !wasConnected) = just connected,  if (!bleConnected && wasConnected) = just disconnected
@@ -158,12 +158,12 @@ float readDistanceCm() {
   if (!sensorReady) {
     return -1;
   }
-  VL53L0X_RangingMeasurementData_t measure;  // holds the distance, a status code, signal strength.
-  sensor.rangingTest(&measure, false);  // false turns of the library's debug printing
-  if (measure.RangeStatus != 0) {
-    return -1; // 0 is the only valid status, 1,2,3,5 return garbage
+  VL53L0X_RangingMeasurementData_t reading;  // holds the distance, a status code, signal strength.
+  sensor.rangingTest(&reading, false);  // false turns off the library's debug printing
+  if (reading.RangeStatus != 0) {
+    return -1;  // 0 is the only valid status, 1,2,3,5 return garbage
   }
-  return measure.RangeMilliMeter / 10.0; // converts mm to cm
+  return reading.RangeMilliMeter / 10.0; // converts mm to cm
 }
 
 // calibration function, current is the latest distance reading
@@ -219,7 +219,7 @@ void updateCalibration(float current) {
   }
 }
 
-// LED strip helpers
+// LED helpers
 void flashLed(int pin) {
   if (flashPin >= 0) {
     digitalWrite(flashPin, LOW);  // stop any flash already running
@@ -398,138 +398,137 @@ void amsNotify(NimBLERemoteCharacteristic *chr, uint8_t *data, size_t len, bool 
   }
 }
 
-// We're the peripheral, but GATT is symmetric - NimBLEServer::getClient() hands us a
-// client for the inbound connection so we can read services on the phone.
+// connection attempt
 void setupAMS() {
   NimBLEClient *client = pServer->getClient(connHandle);
-  if (!client) return;
+  if (!client) {
+    return;
+  }
 
-  NimBLERemoteService *svc = client->getService(AMS_SERVICE);
-  if (!svc) {
+  NimBLERemoteService *service = client->getService(AMS_SERVICE);
+  if (!service) { // not found means not iOS,
     Serial.println("AMS not offered - gesture animations only");
     return;
   }
 
-  NimBLERemoteCharacteristic *eu = svc->getCharacteristic(AMS_ENTITY_UPDATE);
-  if (!eu || !eu->subscribe(true, amsNotify)) {
+  NimBLERemoteCharacteristic *eu = service->getCharacteristic(AMS_ENTITY_UPDATE);
+  if (!eu || !eu->subscribe(true, amsNotify)) {  // hands over amsNotify as the callback, subscribe means whenever the value inside eu changes, run amsNotify
     Serial.println("AMS entity update subscribe failed");
     return;
   }
 
-  const uint8_t wantPlayer[] = {0, 1}; // Player -> PlaybackInfo (state, rate, elapsed)
-  const uint8_t wantTrack[]  = {2, 3}; // Track  -> Duration
+  const uint8_t wantPlayer[] = {0, 1}; // Player, PlaybackInfo: (state, rate, elapsed)
+  const uint8_t wantTrack[]  = {2, 3}; // Track, Duration
   eu->writeValue(wantPlayer, sizeof(wantPlayer), true);
   eu->writeValue(wantTrack, sizeof(wantTrack), true);
 
-  amsFound = true;
+  amsFound = true;  // only set if everything previously succeeded
   Serial.println("AMS connected - progress bar active");
 }
 
-// Only flags state - the LED teardown happens in loop() so FastLED is never
-// driven from the BLE task.
+// required for NimBLE connection events
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *server, NimBLEConnInfo &info) override {
-    // Identity address, not getAddress(): Apple devices rotate their over-the-air
-    // address every few minutes, so that one makes a returning host look brand new.
-    strncpy(peerAddr, info.getIdAddress().toString().c_str(), sizeof(peerAddr) - 1);
+    // ovverid deliberately replaces a base-class fucntion
+    strncpy(peerAddr, info.getIdAddress().toString().c_str(), sizeof(peerAddr) - 1);  // .c_str() creates the plain char pointer strncpy needs
     peerAddr[sizeof(peerAddr) - 1] = '\0';
-    connHandle = info.getConnHandle();
+    connHandle = info.getConnHandle();  // store which connection this is (needed later by setupAMS)
     bleConnected = true;
   }
+
   void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {
     bleConnected = false;
     authDone = false;
     amsFound = false;
     amsTries = 0;
     amsDuration = 0;
-    NimBLEDevice::startAdvertising(); // or it never comes back
+    NimBLEDevice::startAdvertising(); // a BLE device stopes advertising the moment it connects so we want to make sure it starts advertising again on disconnect
   }
-  // iOS won't expose AMS until the link is encrypted, so don't probe before bonding.
+
+  // fires once bonding is done
   void onAuthenticationComplete(NimBLEConnInfo &info) override {
     authDone = true;
     amsNextTry = 0;
   }
 };
 
+// called on disconnect or when a hold fires
 void resetGestureState() {
   passCount = 0;
   volumeActive = false;
 }
 
+
 void setup() {
-  // Serial first: with Serial.begin() after sensor.begin(), a sensor that doesn't
-  // answer left the board dark with no clue why.
   Serial.begin(9600);
   Serial.println("SPARC booting (BLE HID)");
 
-  NimBLEDevice::init("SPARC");
-  NimBLEDevice::setSecurityAuth(true, false, true); // bonding, no MITM, secure connections
-  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
+  NimBLEDevice::init("SPARC");  // name you see when pairing
+  NimBLEDevice::setSecurityAuth(true, false, true);  // bonding (pairing is remembered across reboots), no MITM, secure connections
+  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);  // no input or output (no passcode on connection)
 
-  pServer = NimBLEDevice::createServer();
+
+  // the server holds our services and owns the connections. 
+  pServer = NimBLEDevice::createServer();  // empty server
   NimBLEServer *server = pServer;
   server->setCallbacks(new ServerCallbacks());
 
-  hid = new NimBLEHIDDevice(server);
+  hid = new NimBLEHIDDevice(server);  // tells teh HID object where to attach
   inputReport = hid->getInputReport(REPORT_ID);
   hid->setManufacturer("SPARC");
   hid->setPnp(0x02, 0x303A, 0x0001, 0x0100);
   hid->setHidInfo(0x00, 0x01);
-  hid->setReportMap(reportMap, sizeof(reportMap));
-  hid->setBatteryLevel(100);
+  hid->setReportMap(reportMap, sizeof(reportMap));  // sets the HID service (the 7-button actions)
+  hid->setBatteryLevel(100);  // The board never measures its actual battery for now, so hardcode at 100%
   server->start();
 
-  // GENERIC_HID, not HID_KEYBOARD - see the report map note above.
+  // advertising: GENERIC_HID, not HID_KEYBOARD
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
   adv->setAppearance(GENERIC_HID);
   adv->addServiceUUID(hid->getHidService()->getUUID());
   adv->enableScanResponse(true);
   adv->start();
 
-  Wire.begin(I2C_SDA, I2C_SCL);
-
-  FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
-  FastLED.setBrightness(10);
+  Wire.begin(I2C_SDA, I2C_SCL);  // starts the I2C as master on these two pings
+  FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);  // registers the our led strip
+  FastLED.setBrightness(10);  // brightness 10 out of 255. Affects every animation and progress bar. ex: head of the swipe animation: colour 120,200,255  ×  255/255 (nscale8)  ×  10/255 (brightness)  =  5,8,10. nscale() is applied to one pixel while setBrightness is applied to every pixel.
   FastLED.clear();
   FastLED.show();
 
 
-  // On a cold power-up the VL53L0X shares the ESP32's rail and is still booting
-  // when we get here, so an immediate begin() finds nothing. Wait, retry, and
-  // carry on either way so a dead sensor can't take Bluetooth down with it.
+  // On power-up, the VL53L0X shares the ESP32's rail and is still booting when we get here, so an immediate begin() finds nothing. Wait, retry up to 5 times, and carry on either way so a dead sensor doesn't take Bluetooth down with it.
   delay(200);
   for (int i = 0; i < 5 && !sensorReady; i++) {
     sensorReady = sensor.begin();
-    if (!sensorReady) delay(200);
-  }
-  // Gestures used to only need 2-30cm, so a short timing budget traded range for
-  // speed. Calibration now needs to see out to 1m, and skin/clothing reflect IR
-  // far worse than a flat wall - the old high-speed config was losing signal
-  // (and returning invalid RangeStatus) well before that. Long-range mode lowers
-  // the signal-rate threshold to buy back distance.
-  // The budget is still pinned back down afterwards (configSensor sets its own):
-  // long-range's default is slow enough that a fast wave lands in the gaps between
-  // samples again, which is the bug the 20ms budget was here to fix.
-  if (sensorReady) {
-    sensor.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
-    sensor.setMeasurementTimingBudgetMicroSeconds(20000);
+    if (!sensorReady) {
+      delay(200);
+    }
   }
 
-  if (sensorReady) Serial.println("VL53L0X ready");
-  else Serial.printf("VL53L0X NOT FOUND - check wiring (SDA=%d, SCL=%d, 3V3, GND)\n",
-                     I2C_SDA, I2C_SCL);
+  if (sensorReady) {
+    sensor.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);  // long-range mode to look more than 1m for calibration,
+    sensor.setMeasurementTimingBudgetMicroSeconds(20000);  // how long the sensor spends on one measurement
+  }
+
+  if (sensorReady) {
+    Serial.println("VL53L0X ready");
+  }
+  else {
+    Serial.printf("VL53L0X NOT FOUND - check wiring (SDA=%d, SCL=%d, 3V3, GND)\n", I2C_SDA, I2C_SCL);
+  }
 
   pinMode(ledPause, OUTPUT);
 
   Serial.println("setup done - advertising as SPARC");
 }
 
+
 void loop() {
-  if (bleConnected && !wasConnected) {
+  if (bleConnected && !wasConnected) {  // just connected
     wasConnected = true;
     Serial.print("BLE connected: ");
     Serial.println(peerAddr);
-  } else if (!bleConnected && wasConnected) {
+  } else if (!bleConnected && wasConnected) {  // just disconnected
     digitalWrite(ledPause, LOW);
     anim = ANIM_NONE;
     stripOff();
@@ -546,53 +545,64 @@ void loop() {
     Serial.println("BLE disconnected");
   }
 
-  float current = readDistanceCm();
+  float current = readDistanceCm();  // one sensor reading
   updateCalibration(current);
 
   if (millis() - lastDebugPrint >= DEBUG_PRINT_INTERVAL) {
     lastDebugPrint = millis();
     Serial.print("dist=");
-    if (current < 0) Serial.print("--");
+    if (current < 0) {
+      Serial.print("--");
+    }
     else Serial.print(current);
-    Serial.print("cm  zone=0-");
+    Serial.print("cm, zone=0-");
     Serial.print(zoneMax);
-    Serial.print(isCalibrated ? "  [calibrated]" : "  [default]");
-    Serial.print(bleConnected ? "" : "  (not connected)");
+    Serial.print(isCalibrated ? ", [calibrated]" : ",, [default]");
+    Serial.print(bleConnected ? "" : ", (not connected)");
     Serial.println();
   }
 
-  if (!bleConnected) return;
+  if (!bleConnected) {
+    return;
+  }
 
-  // The Python app used to run this ramp and stop it with "VS"; the board owns
-  // it now, so it also owns deciding when to stop.
+  // renderAnim() never ends volume animations so loop() has to end it
   if (!volumeActive && (anim == ANIM_VOL_UP || anim == ANIM_VOL_DN)) {
     anim = ANIM_NONE;
     stripOff();
   }
 
-  // A gesture animation always wins for its ~360ms; the bar resumes underneath.
+  // frame rendering, animation has priority over progress bar
   if (millis() - lastFrame >= FRAME_MS) {
     lastFrame = millis();
-    if (anim != ANIM_NONE) renderAnim();
-    else if (amsFound)     renderProgress();
+    if (anim != ANIM_NONE) {
+      renderAnim();
+    }
+    else if (amsFound) {
+      renderProgress();
+    }
   }
 
+  // AMS retry block
   if (authDone && !amsFound && amsTries < 5 && millis() >= amsNextTry) {
     amsTries++;
     amsNextTry = millis() + 2000;
-    setupAMS();
+    setupAMS();  // try again
   }
 
-  handleFlash();
+  handleFlash();  // checks if the pause led has been on for more than 150ms
 
   bool inZone = (current >= DETECT_MIN && current <= zoneMax);
 
-  if (inZone) outOfRangeSince = 0;
-  else if (outOfRangeSince == 0) outOfRangeSince = millis();
-  bool handConfirmedGone = (!inZone && outOfRangeSince != 0 &&
-                            millis() - outOfRangeSince >= OUT_OF_RANGE_MS);
+  if (inZone) {
+    outOfRangeSince = 0;
+  }
+  else if (outOfRangeSince == 0) {  // if just out of range, start the timer
+    outOfRangeSince = millis();
+  }
+  bool handConfirmedGone = (!inZone && outOfRangeSince != 0 && millis() - outOfRangeSince >= OUT_OF_RANGE_MS);
 
-  if (inZone && !handInZone) {
+  if (inZone && !handInZone) {  // hand just in zone
     handInZone = true;
     handEntryTime = millis();
     holdFired = false;
@@ -600,24 +610,25 @@ void loop() {
     handMaxDist = current;
   }
 
-  else if (handConfirmedGone && handInZone) {
+  else if (handConfirmedGone && handInZone) {  // hand just left
     handInZone = false;
     outOfRangeSince = 0;
     volumeActive = false;
     handMinDist = 999;
     handMaxDist = -999;
 
-    // A dwell that reached HOLD_TIME was a hold (play/pause or volume mode),
-    // not a pass - only count it toward next/prev if the hand left before that.
-    if (!holdFired) {
+    // distinguishing between a play/pause and a next/previous
+    if (!holdFired) {  // only counts as a pass if it left before 300ms
       if (passCount == 0) {
         passCount = 1;
         firstPassExitTime = millis();
-      } else if (passCount == 1 && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
+      }
+      else if (passCount == 1 && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
         sendMediaKey(KEY_PREV, "PREV");
         startAnim(ANIM_PREV);
         passCount = 0;
-      } else {
+      }
+      else {
         passCount = 1;
         firstPassExitTime = millis();
       }
@@ -626,27 +637,30 @@ void loop() {
 
   else if (inZone && handInZone) {
     if (!holdFired) {
-      if (current < handMinDist) handMinDist = current;
-      if (current > handMaxDist) handMaxDist = current;
+      if (current < handMinDist) {
+        handMinDist = current;
+      }
+      if (current > handMaxDist) {
+        handMaxDist = current;
+      }
 
       if (millis() - handEntryTime >= HOLD_TIME) {
         holdFired = true;
         resetGestureState();
-        // Steady for the whole hold -> play/pause. Drifted during it -> the
-        // hand meant to slide, so switch to volume mode instead.
+        // steady hold = play/pause. unsteady hold = volume mode
         if (handMaxDist - handMinDist >= VOLUME_DRIFT_CM) {
           volumeActive = true;
           volumeRefDist = current;
-        } else {
+        }
+        else {
           sendMediaKey(KEY_PLAY_PAUSE, "PLAY/PAUSE");
           startAnim(ANIM_PULSE);
           flashLed(ledPause);
         }
       }
-    } else if (volumeActive) {
-      // Volume mode: the hand is a slider from here on. Every VOLUME_CM_PER_STEP
-      // of travel sends one step in that direction; the reference point moves
-      // with it so movement past a step is picked up on the next loop.
+    }
+    // volume block
+    else if (volumeActive) {
       float delta = current - volumeRefDist;
       while (delta >= VOLUME_CM_PER_STEP) {
         sendMediaKey(KEY_VOL_UP, "VOL+");
