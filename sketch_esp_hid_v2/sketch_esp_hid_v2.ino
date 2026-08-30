@@ -130,9 +130,17 @@ unsigned long firstPassExitTime = 0;
 bool volumeActive = false;
 float volumeRefDist = 0;  // distance we're measuring movement from
 const float VOLUME_CM_PER_STEP = 1.75;  // 1.75 cm = 1 volume step
-// How long to wait to enter volume mode
-const unsigned long VOLUME_ENTER_MS = 600;
+const unsigned long VOLUME_ENTER_MS = 600;  // how long to wait to enter volume mode
 unsigned long lastVolumeStep = 0;  // stores the last time a volume signal was sent
+const unsigned long VOL_STEP_MS = 100;  // the time to wait before sending consecutive volume actions
+const unsigned long VOLUME_EXIT_MS = 500;  // hold mid-zone for 500 ms = leave volume mode
+const float EDGE = 2.0; // used when user holds hand at zone min or max while in volume mode
+const unsigned long EDGE_HOLD_MS = 250;  // hold at the edge for 250ms = start repeating volume action
+
+// used to detect a fast exit from volume mode
+float lastSampleDist = 0;
+unsigned long lastSampleTime = 0;
+const float EXIT_SPEED = 30.0;   // cm/s outward = withdrawal
 
 // used to detect volume mode entry
 unsigned long stillSince = 0;
@@ -636,13 +644,13 @@ void loop() {
   }
 
   else if (inZone && handInZone) {
-    if (!holdFired) {
-      // if there's movement, update stillSince
-      if (current - prevDistance > MOVE_NOISE || prevDistance - current > MOVE_NOISE) {
-        stillSince = millis();
-        prevDistance = current;
-      }
+    // if there's movement, update stillSince
+    if (current - prevDistance > MOVE_NOISE || prevDistance - current > MOVE_NOISE) {
+      stillSince = millis();
+      prevDistance = current;
+    }
 
+    if (!holdFired) {
       // if it's been 300ms since the last movement
       if (millis() - stillSince >= HOLD_TIME) {  // steady hold = play/pause. if hand is held still, play/pause will always fire before volume mode is entered
         holdFired = true;
@@ -661,20 +669,47 @@ void loop() {
     }
     // volume block
     else if (volumeActive) {
-      float delta = current - volumeRefDist;
-      
-      // send a volume signal once every 100ms so that one loop() iteration doesn't handle too many volume calls (since each sendMediaKey has a 15ms delay)
-      if (delta >= VOLUME_CM_PER_STEP && millis() - lastVolumeStep >= 100) {
-        sendMediaKey(KEY_VOL_UP, "VOL+");
-        startAnim(ANIM_VOL_UP);
-        volumeRefDist += VOLUME_CM_PER_STEP;
-        lastVolumeStep = millis();
+      float delta = current - volumeRefDist;  // calculates the change in distance since last volume step
+
+      // first check if the hand is held still at an edge (still increasing or decreasing volume)
+      if (current >= zoneMax - EDGE && millis() - stillSince > EDGE_HOLD_MS) {
+        if (millis() - lastVolumeStep >= VOL_STEP_MS) {
+          sendMediaKey(KEY_VOL_UP, "VOL+");
+          startAnim(ANIM_VOL_UP);
+          lastVolumeStep = millis();
+        }
       }
-      else if (delta <= -VOLUME_CM_PER_STEP && millis() - lastVolumeStep >= 100) {
-        sendMediaKey(KEY_VOL_DOWN, "VOL-");
-        startAnim(ANIM_VOL_DN);
-        volumeRefDist -= VOLUME_CM_PER_STEP;
-        lastVolumeStep = millis();
+
+      else if (current < DETECT_MIN + EDGE && millis() - stillSince >= EDGE_HOLD_MS) {
+        if (millis() - lastVolumeStep >= VOL_STEP_MS) {
+          sendMediaKey(KEY_VOL_DOWN, "VOL-");
+          startAnim(ANIM_VOL_DN);
+          lastVolumeStep = millis();
+        }
+      }
+
+      // exit volume mode on a hold mid-zone
+      else if (millis() - stillSince > VOLUME_EXIT_MS) {
+        volumeActive = false;
+        resetGestureState();
+      }
+
+      // send a volume signal once every 100ms so that one loop() iteration doesn't handle too many volume calls (since each sendMediaKey has a 15ms delay)
+      else {
+        if (millis() - lastVolumeStep >= VOL_STEP_MS) {
+          if (delta >= VOLUME_CM_PER_STEP) {
+            sendMediaKey(KEY_VOL_UP, "VOL+");
+            startAnim(ANIM_VOL_UP);
+            volumeRefDist += VOLUME_CM_PER_STEP;
+            lastVolumeStep = millis();
+          }
+          else if (delta <= -VOLUME_CM_PER_STEP) {
+            sendMediaKey(KEY_VOL_DOWN, "VOL-");
+            startAnim(ANIM_VOL_DN);
+            volumeRefDist -= VOLUME_CM_PER_STEP;
+            lastVolumeStep = millis();
+          }
+        }
       }
     }
   }
