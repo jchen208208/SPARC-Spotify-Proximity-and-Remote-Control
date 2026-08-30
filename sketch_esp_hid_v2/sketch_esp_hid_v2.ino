@@ -85,11 +85,11 @@ bool amsFound = false;
 int amsTries = 0;  // gives up after 5 attempts
 unsigned long amsNextTry = 0;  // when to retry
 
-float amsElapsed = 0;  // seconds into the track, as of amsStart
+float amsElapsed = 0;  // seconds into the track, as of amsLastUpdate
 float amsRate = 1.0;  // playback speed
 float amsDuration = 0;  // track length
 int amsState = 0;  // 0 paused, 1 playing, 2 rewinding, 3 fast-forwarding
-unsigned long amsStart = 0;
+unsigned long amsLastUpdate = 0;
 
 // detection zone boundary in cm. whatever's parked within 1m of the sensor for 5+ seconds becomes the "back wall," and the gesture zone is from the sensor to the wall.
 // falls back to a fixed 30cm boundary when nothing is sitting in range.
@@ -257,7 +257,7 @@ void renderProgress() {
 
   float pos = amsElapsed;
   if (amsState == 1) {  // if track playing
-    pos += (millis() - amsStart) / 1000.0f * amsRate;  // updates how far along the track (ms to s)
+    pos += (millis() - amsLastUpdate) / 1000.0f * amsRate;  // updates how far along the track (ms to s)
   }
   float frac = constrain(pos / amsDuration, 0.0f, 1.0f);  // fraction of track done
 
@@ -298,7 +298,7 @@ void renderAnim() {
       stripOff();
       return;
       }
-    uint8_t fade = 255 - (255 * (t / PULSE_MS);  // the longer into the pulse animation, the dimmer the leds.
+    uint8_t fade = 255 - (255 * ((float)t / PULSE_MS));  // the longer into the pulse animation, the dimmer the leds.
     for (int i = 0; i < NUMPIXELS; i++) {
       leds[i] = barColour((float)i / (NUMPIXELS - 1));
       leds[i].nscale8(fade);
@@ -336,45 +336,64 @@ void renderAnim() {
   FastLED.show();
 }
 
-// Press and release. Leaving a bit set reads as a stuck key - for volume the
-// host would auto-repeat forever.
-void sendMediaKey(uint8_t mask, const char *label) {
-  if (!bleConnected || inputReport == nullptr) return;
+// press a "button" and release. Leaving a bit set = a stuck key
+void sendMediaKey(uint8_t byte, const char *label) {
+  if (!bleConnected || inputReport == nullptr) {  // if no device connected or the input channel doesn't exist yet
+    return;
+  }
 
-  uint8_t v = mask;
-  inputReport->setValue(&v, 1);
-  inputReport->notify();
-  delay(KEY_HOLD_MS);
-  v = 0;
-  inputReport->setValue(&v, 1);
+  uint8_t value = byte;
+  inputReport->setValue(&value, 1);  // loads one byte intot he channel
+  (*inputReport).notify();  // notify() sends one byte to the phone
+  delay(KEY_HOLD_MS);  // 15ms, wait then release
+  value = 0;
+  inputReport->setValue(&value, 1);  // all 0's = nothing is pressed, aka release
   inputReport->notify();
 
   Serial.print("SENT: ");
   Serial.println(label);
 }
 
-// Notification payload: [EntityID][AttributeID][flags][value as UTF-8].
+// called whenever iOS pushes an update
+// notification payload: [EntityID][AttributeID][flags][value as UTF-8].
 void amsNotify(NimBLERemoteCharacteristic *chr, uint8_t *data, size_t len, bool isNotify) {
-  if (len < 3) return;
+  if (len < 3) {
+    return;  // too short to even have header bytes
+  }
 
   char buf[48];
-  size_t n = len - 3;
-  if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-  memcpy(buf, data + 3, n);
+  size_t n = len - 3;  // how many text bytes there are
+  if (n >= sizeof(buf)) {
+    n = sizeof(buf) - 1;  // prevents buffer overflow
+  }
+  memcpy(buf, data + 3, n);  // data + 0 and 1 are headers, data + 2 is flags, and data + 3 is the actualy text data
   buf[n] = '\0';
 
-  if (data[0] == 0 && data[1] == 1) {        // Player / PlaybackInfo
-    // "state,rate,elapsed" - any field may arrive empty, so keep the last known value.
-    char *f[3] = {buf, nullptr, nullptr};
-    int nf = 1;
-    for (char *c = buf; *c && nf < 3; c++) {
-      if (*c == ',') { *c = '\0'; f[nf++] = c + 1; }
+  if (data[0] == 0 && data[1] == 1) {  // Player, PlaybackInfo
+    // "state,rate,elapsed": i.e. "1,1.0,45.2"
+    char *fields[3] = {buf, nullptr, nullptr};
+    int nfields = 1;
+    for (char *c = buf; *c && nfields < 3; c++) {
+      if (*c == ',') {
+        *c = '\0';
+        fields[nfields++] = c + 1;  // stores the address of the character after the comma
+        }
     }
-    if (f[0] && *f[0]) amsState   = atoi(f[0]);
-    if (f[1] && *f[1]) amsRate    = atof(f[1]);
-    if (f[2] && *f[2]) amsElapsed = atof(f[2]);
-    amsStart = millis();
-  } else if (data[0] == 2 && data[1] == 3) { // Track / Duration
+    if (amsState == 1) {  // prevents lag behinds on the progress bar if given a partial PlaybackInfo update
+      amsElapsed += (millis() - amsLastUpdate) / 1000.0f * amsRate;
+      amsLastUpdate = millis();
+    }
+    if (fields[0] && *fields[0]) {
+      amsState = atoi(fields[0]); // string to int
+    }
+    if (fields[1] && *fields[1]) {
+      amsRate = atof(fields[1]);  // string to float
+    }
+    if (fields[2] && *fields[2]) {
+      amsElapsed = atof(fields[2]);  // if track is playing and there is an elapsed field, then the amsElpased we set just gets overwritten
+    }
+  }
+  else if (data[0] == 2 && data[1] == 3) { // Track, Duration
     amsDuration = atof(buf);
   }
 }
