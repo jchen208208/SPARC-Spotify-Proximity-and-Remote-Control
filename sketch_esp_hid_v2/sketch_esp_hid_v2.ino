@@ -110,8 +110,9 @@ unsigned long calibNoObjectSince = 0;  // when it disappeared
 bool isCalibrated = false;
 
 // gesture timings
-const unsigned long HOLD_TIME = 200;  // stillness needed for play/pause. lower = snappier, but any slide slower than MOVE_NOISE/HOLD_TIME cm/s will false-fire as a pause
-const unsigned long DOUBLE_PASS_WINDOW = 800;
+const float VOLUME_DISTANCE_INCREASE = 8.0;  // how far past zoneMax the hand may drift while volume mode runs
+const unsigned long HOLD_TIME = 150;  // stillness needed for play/pause. a pass slower than MOVE_NOISE/HOLD_TIME cm/s fires one by mistake
+const unsigned long MULTI_PASS_WINDOW = 680;  // all three passes must land inside this, and next/prev wait it out before firing
 const unsigned long OUT_OF_RANGE_MS = 100;
 
 // Non-blocking LED flash
@@ -120,7 +121,6 @@ unsigned long flashStart = 0;
 const unsigned long FLASH_DURATION = 150;
 
 bool handInZone = false;
-unsigned long handEntryTime = 0;
 bool holdFired = false;
 
 int passCount = 0;
@@ -128,20 +128,17 @@ unsigned long firstPassExitTime = 0;
 
 // Volume mode: entered when no steady hold for a period of time. while active, hand movement acts as a slider: <this many> cm of travel sends one volume step in that direction.
 bool volumeActive = false;
-float volumeRefDist = 0;  // distance we're measuring movement from
-const float VOLUME_CM_PER_STEP = 1.2;  // 1.2 cm = 1 volume step. sized so one sweep covers most of the 16 steps the host has
-const unsigned long VOLUME_ENTER_MS = 700;  // how long to wait to enter volume mode. doubles as the deadline for play/pause, which has VOLUME_ENTER_MS - HOLD_TIME to settle
+unsigned long volumeEnteredAt = 0;  // when volume mode armed
+float volumeCenter = 0;  // where the hand settled when volume mode armed. -1 until anchored
+const float VOLUME_DEAD = 2.0;  // no-change region either side of the centre, so a parked hand doesn't flip between up and down
+const unsigned long VOLUME_GRACE_MS = 600;  // after arming, wait this long before repeating starts
 unsigned long lastVolumeStep = 0;  // stores the last time a volume signal was sent
-const unsigned long VOL_STEP_MS = 70;  // the time to wait before sending consecutive volume actions
-const unsigned long VOLUME_EXIT_MS = 500;  // hold mid-zone for 500 ms = leave volume mode
-const float EDGE = 2.0;  // width of the outer edge band, measured back from zoneMax
-const float INNER_EDGE = 8.0;  // absolute distance for the inner edge, not a band above DETECT_MIN. a hand cannot be held reliably close enough for that to ever fire
-const unsigned long EDGE_HOLD_MS = 250;  // hold at the edge for 250ms = start repeating volume action
+const unsigned long VOL_STEP_MS = 100;  // repeat interval while held off-centre, so a full sweep takes about 1.6s
 
 // used to detect a fast exit from volume mode
 float lastSampleDistance = 0;
 unsigned long lastSampleTime = 0;
-const float EXIT_SPEED = 45.0;  // anything more than 45cm/s outward = exiting from volume mode
+const float EXIT_SPEED = 90.0;  // if hand moves >= 90cm/s upwards, it means to exit volume mode and not increase volume
 const unsigned long SPEED_WINDOW_MS = 100;  // only refresh dx/dt after 100ms as passed
 float speed = 0.0;
 
@@ -331,12 +328,12 @@ void renderAnim() {
     }
 
   int head = frame % NUMPIXELS;
-  if (anim == ANIM_PREV || anim == ANIM_VOL_DN) {
+  if (anim == ANIM_PREV || anim == ANIM_VOL_UP) {
     head = NUMPIXELS - 1 - head;  // mirrors the position
   }
 
   for (int i = 0; i < NUMPIXELS; i++) {
-    int behind = (anim == ANIM_PREV || anim == ANIM_VOL_DN) ? i - head : head - i;  //  how far this current LED sits behind the moving head.
+    int behind = (anim == ANIM_PREV || anim == ANIM_VOL_UP) ? i - head : head - i;  //  how far this current LED sits behind the moving head.
     if (behind >= 0 && behind < 3) {  // if the led is "behind" the head. behind < 3 is so that our swipe animation only has a trail of 3 LEDs
       leds[i] = barColour((float)i / (NUMPIXELS - 1));
       leds[i].nscale8(255 >> (behind * 2));  // >> shifts the binary digits to the right. Each shift drops the rightmost bit which halves the number.
@@ -560,8 +557,10 @@ void loop() {
 
   float current = readDistanceCm();  // one sensor reading
 
-  // only calibrate when no hand is being tracked. calibRefDist is smoothed toward current every loop, so a slowly moving hand never trips CALIBRATION_TOLERANCE - the reference just follows it, so zoneMax collapses inward behind the hand
-  if (!handInZone) updateCalibration(current);
+  // only calibrate when no hand is being tracked to make sure zoneMax doesn't move inward with the hand
+  if (!handInZone) {
+    updateCalibration(current);
+  }
 
   if (millis() - lastDebugPrint >= DEBUG_PRINT_INTERVAL) {
     lastDebugPrint = millis();
@@ -607,7 +606,15 @@ void loop() {
 
   handleFlash();  // checks if the pause led has been on for more than 150ms
 
-  bool inZone = (current >= DETECT_MIN && current <= zoneMax);
+  // volume mode gets a wider far edge so an overshoot doesn't end the dwell, but never past the wall
+  float zoneLimit = zoneMax;
+  if (volumeActive) {
+    zoneLimit = zoneMax + VOLUME_DISTANCE_INCREASE;
+    if (isCalibrated && zoneLimit > calibRefDist - CALIBRATION_TOLERANCE) {
+      zoneLimit = calibRefDist - CALIBRATION_TOLERANCE;
+    }
+  }
+  bool inZone = (current >= DETECT_MIN && current <= zoneLimit);
 
   if (inZone) {
     outOfRangeSince = 0;
@@ -619,8 +626,11 @@ void loop() {
 
   if (inZone && !handInZone) {  // hand just in zone
     handInZone = true;
-    handEntryTime = millis();
     holdFired = false;
+    if (volumeActive) {  // armed by a triple pass, now going live - restart the grace and re-anchor
+      volumeEnteredAt = millis();
+      volumeCenter = -1;
+    }
     stillSince = millis();
     prevDistance = current;
     lastSampleDistance = current;
@@ -630,22 +640,25 @@ void loop() {
   else if (handConfirmedGone && handInZone) {  // hand just left
     handInZone = false;
     outOfRangeSince = 0;
+    bool wasAdjusting = volumeActive;  // the dwell that just ended was a volume adjustment
     volumeActive = false;
 
-    // distinguishing between a play/pause and a next/previous
-    if (!holdFired) {  // only counts as a pass if it left before 300ms
-      if (passCount == 0) {
-        passCount = 1;
+    // only a plain pass counts, not a hold or a volume adjustment
+    if (!holdFired && !wasAdjusting) {
+      if (passCount == 0 || millis() - firstPassExitTime > MULTI_PASS_WINDOW) {
+        passCount = 1;  // first pass, or the previous run timed out
         firstPassExitTime = millis();
-      }
-      else if (passCount == 1 && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
-        sendMediaKey(KEY_PREV, "PREV");
-        startAnim(ANIM_PREV);
-        passCount = 0;
       }
       else {
-        passCount = 1;
-        firstPassExitTime = millis();
+        passCount++;
+        // three inside the window = volume mode. -1 centre means "not anchored yet"
+        if (passCount >= 3) {
+          passCount = 0;
+          volumeActive = true;
+          volumeEnteredAt = millis();
+          volumeCenter = -1;
+          startAnim(ANIM_PULSE);
+        }
       }
     }
   }
@@ -665,79 +678,64 @@ void loop() {
       lastSampleTime = millis();
     }
 
-    if (!holdFired) {
-      // if it has been HOLD_TIME since the last movement
-      if (millis() - stillSince >= HOLD_TIME) {  // steady hold = play/pause. if hand is held still, play/pause will always fire before volume mode is entered
+    if (!volumeActive) {
+      // one decision, taken the moment the hand goes still. holdFired also stops this dwell counting
+      // as a next/prev pass
+      if (!holdFired && millis() - stillSince >= HOLD_TIME) {
         holdFired = true;
         resetGestureState();
         sendMediaKey(KEY_PLAY_PAUSE, "PLAY/PAUSE");
         startAnim(ANIM_PULSE);
         flashLed(ledPause);
       }
-      // if it's been 600ms and nothing's been held still for 300ms at a time
-      else if (millis() - handEntryTime >= VOLUME_ENTER_MS) {  // unsteady hold = volume mode
-        holdFired = true;
-        resetGestureState();
-        volumeActive = true;
-        volumeRefDist = current;
-      }
     }
     // volume block
-    else if (volumeActive) {
-      float delta = current - volumeRefDist;  // calculates the change in distance since last volume step
-
-      // first, check if the hand speed exceeds the max speed of 45cm/s. if it does, exit volume mode
-      if (speed > EXIT_SPEED) {
+    else {
+      if (speed > EXIT_SPEED) {  // pulled away rather than adjusting
         volumeActive = false;
         resetGestureState();
       }
-
-      // check if the hand is held still at an edge (still increasing or decreasing volume)
-      else if (current >= zoneMax - EDGE && millis() - stillSince > EDGE_HOLD_MS) {
-        if (millis() - lastVolumeStep >= VOL_STEP_MS) {
+      // anchor the centre wherever the hand settles, not where it crossed the boundary
+      else if (volumeCenter < 0) {
+        if (millis() - volumeEnteredAt >= VOLUME_GRACE_MS) {
+          volumeCenter = current;
+          // keep the centre off both ends so up and down stay reachable
+          float low = DETECT_MIN + VOLUME_DEAD + 1.0;
+          float high = zoneMax - VOLUME_DEAD - 1.0;
+          if (volumeCenter < low) {
+            volumeCenter = low;
+          }
+          if (volumeCenter > high) {
+            volumeCenter = high;
+          }
+        }
+      }
+      else if (millis() - lastVolumeStep >= VOL_STEP_MS) {
+        if (current > volumeCenter + VOLUME_DEAD) {
           sendMediaKey(KEY_VOL_UP, "VOL+");
           startAnim(ANIM_VOL_UP);
           lastVolumeStep = millis();
         }
-      }
-
-      else if (current < INNER_EDGE && millis() - stillSince >= EDGE_HOLD_MS) {
-        if (millis() - lastVolumeStep >= VOL_STEP_MS) {
+        else if (current < volumeCenter - VOLUME_DEAD) {
           sendMediaKey(KEY_VOL_DOWN, "VOL-");
           startAnim(ANIM_VOL_DN);
           lastVolumeStep = millis();
         }
-      }
-
-      // exit volume mode on a hold mid-zone
-      else if (millis() - stillSince > VOLUME_EXIT_MS) {
-        volumeActive = false;
-        resetGestureState();
-      }
-
-      // send a volume signal once every 100ms so that one loop() iteration doesn't handle too many volume calls (since each sendMediaKey has a 15ms delay)
-      else {
-        if (millis() - lastVolumeStep >= VOL_STEP_MS) {
-          if (delta >= VOLUME_CM_PER_STEP) {
-            sendMediaKey(KEY_VOL_UP, "VOL+");
-            startAnim(ANIM_VOL_UP);
-            volumeRefDist += VOLUME_CM_PER_STEP;
-            lastVolumeStep = millis();
-          }
-          else if (delta <= -VOLUME_CM_PER_STEP) {
-            sendMediaKey(KEY_VOL_DOWN, "VOL-");
-            startAnim(ANIM_VOL_DN);
-            volumeRefDist -= VOLUME_CM_PER_STEP;
-            lastVolumeStep = millis();
-          }
-        }
+        // inside the volume dead zone so holding still near the split doesnt' change anything
       }
     }
   }
 
-  if (!handInZone && passCount == 1 && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
-    sendMediaKey(KEY_NEXT, "NEXT");
-    startAnim(ANIM_NEXT);
+  // both wait out the window, since a second pass looks like the start of a third
+  if (!handInZone && passCount > 0 && millis() - firstPassExitTime > MULTI_PASS_WINDOW) {
+    if (passCount == 1) {
+      sendMediaKey(KEY_NEXT, "NEXT");
+      startAnim(ANIM_NEXT);
+    }
+    else {
+      sendMediaKey(KEY_PREV, "PREV");
+      startAnim(ANIM_PREV);
+    }
     passCount = 0;
   }
 }
