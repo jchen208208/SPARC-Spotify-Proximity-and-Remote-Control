@@ -112,7 +112,7 @@ bool isCalibrated = false;
 // gesture timings
 const float VOLUME_DISTANCE_INCREASE = 8.0;  // how far past zoneMax the hand may drift while volume mode runs
 const unsigned long HOLD_TIME = 150;  // stillness needed for play/pause. a pass slower than MOVE_NOISE/HOLD_TIME cm/s fires one by mistake
-const unsigned long MULTI_PASS_WINDOW = 680;  // all three passes must land inside this, and next/prev wait it out before firing
+const unsigned long MULTI_PASS_WINDOW = 680;  // all three passes must land inside this, and next/prev must wait this long before firing
 const unsigned long OUT_OF_RANGE_MS = 100;
 
 // Non-blocking LED flash
