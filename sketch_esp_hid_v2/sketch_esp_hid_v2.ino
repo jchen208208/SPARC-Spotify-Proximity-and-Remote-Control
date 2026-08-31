@@ -559,7 +559,9 @@ void loop() {
   }
 
   float current = readDistanceCm();  // one sensor reading
-  updateCalibration(current);
+
+  // only calibrate when no hand is being tracked. calibRefDist is smoothed toward current every loop, so a slowly moving hand never trips CALIBRATION_TOLERANCE - the reference just follows it, so zoneMax collapses inward behind the hand
+  if (!handInZone) updateCalibration(current);
 
   if (millis() - lastDebugPrint >= DEBUG_PRINT_INTERVAL) {
     lastDebugPrint = millis();
