@@ -93,7 +93,7 @@ unsigned long amsLastUpdate = 0;
 
 // detection zone boundary in cm. whatever's parked within 1m of the sensor for 5+ seconds becomes the "back wall," and the gesture zone is from the sensor to the wall.
 // falls back to a fixed 30cm boundary when nothing is sitting in range.
-const float DETECT_MIN = 2.0;
+const float DETECT_MIN = 4.0;  // VL53L0X readings break down below ~4cm, so treat anything closer as out of zone
 const float DEFAULT_ZONE_MAX = 30.0;
 float zoneMax = DEFAULT_ZONE_MAX;
 
@@ -110,7 +110,7 @@ unsigned long calibNoObjectSince = 0;  // when it disappeared
 bool isCalibrated = false;
 
 // gesture timings
-const unsigned long HOLD_TIME = 300;
+const unsigned long HOLD_TIME = 200;  // stillness needed for play/pause. lower = snappier, but any slide slower than MOVE_NOISE/HOLD_TIME cm/s will false-fire as a pause
 const unsigned long DOUBLE_PASS_WINDOW = 800;
 const unsigned long OUT_OF_RANGE_MS = 100;
 
@@ -129,23 +129,26 @@ unsigned long firstPassExitTime = 0;
 // Volume mode: entered when no steady hold for a period of time. while active, hand movement acts as a slider: <this many> cm of travel sends one volume step in that direction.
 bool volumeActive = false;
 float volumeRefDist = 0;  // distance we're measuring movement from
-const float VOLUME_CM_PER_STEP = 1.75;  // 1.75 cm = 1 volume step
-const unsigned long VOLUME_ENTER_MS = 600;  // how long to wait to enter volume mode
+const float VOLUME_CM_PER_STEP = 1.2;  // 1.2 cm = 1 volume step. sized so one sweep covers most of the 16 steps the host has
+const unsigned long VOLUME_ENTER_MS = 700;  // how long to wait to enter volume mode. doubles as the deadline for play/pause, which has VOLUME_ENTER_MS - HOLD_TIME to settle
 unsigned long lastVolumeStep = 0;  // stores the last time a volume signal was sent
-const unsigned long VOL_STEP_MS = 100;  // the time to wait before sending consecutive volume actions
+const unsigned long VOL_STEP_MS = 70;  // the time to wait before sending consecutive volume actions
 const unsigned long VOLUME_EXIT_MS = 500;  // hold mid-zone for 500 ms = leave volume mode
-const float EDGE = 2.0; // used when user holds hand at zone min or max while in volume mode
+const float EDGE = 2.0;  // width of the outer edge band, measured back from zoneMax
+const float INNER_EDGE = 8.0;  // absolute distance for the inner edge, not a band above DETECT_MIN. a hand cannot be held reliably close enough for that to ever fire
 const unsigned long EDGE_HOLD_MS = 250;  // hold at the edge for 250ms = start repeating volume action
 
 // used to detect a fast exit from volume mode
 float lastSampleDistance = 0;
 unsigned long lastSampleTime = 0;
-const float EXIT_SPEED = 30.0;  // anything more than 30cm/s outward = exiting from volume mode
+const float EXIT_SPEED = 45.0;  // anything more than 45cm/s outward = exiting from volume mode
+const unsigned long SPEED_WINDOW_MS = 100;  // only refresh dx/dt after 100ms as passed
+float speed = 0.0;
 
 // used to detect volume mode entry
 unsigned long stillSince = 0;
 float prevDistance = 0;
-const float MOVE_NOISE = 0.75;
+const float MOVE_NOISE = 1.0;
 
 // animation enums
 enum Anim {ANIM_NONE, ANIM_NEXT, ANIM_PREV, ANIM_PULSE, ANIM_VOL_UP, ANIM_VOL_DN};
@@ -178,7 +181,7 @@ float readDistanceCm() {
 
 // calibration function, current is the latest distance reading
 void updateCalibration(float current) {
-  bool objectPresent = (current >= DETECT_MIN && current <= CALIBRATION_RANGE);  // true if something's between 2cm and 1m. 
+  bool objectPresent = (current >= DETECT_MIN && current <= CALIBRATION_RANGE);  // true if something is between DETECT_MIN and 1m. 
 
   if (!objectPresent) {
     // nothing within 1m = debounce briefly then fall back to the fixed default zone.
@@ -653,16 +656,15 @@ void loop() {
     }
 
     // speed detection
-    float speed = 0;
     unsigned long dt = millis() - lastSampleTime;
-    if (dt > 0) {
-      speed = ((current - lastSampleDistance) / dt) * 1000.0;  // hand speed in cm/s, measured from change in distance since last loop iteration over change in time
+    if (dt > SPEED_WINDOW_MS) {
+      speed = ((current - lastSampleDistance) / dt) * 1000.0;  // hand speed in cm/s, measured from change in distance since over the last 100ms divided by change in time
+      lastSampleDistance = current;  // reseed only if speed has been calculated
+      lastSampleTime = millis();
     }
-    lastSampleDistance = current;
-    lastSampleTime = millis();
 
     if (!holdFired) {
-      // if it's been 300ms since the last movement
+      // if it has been HOLD_TIME since the last movement
       if (millis() - stillSince >= HOLD_TIME) {  // steady hold = play/pause. if hand is held still, play/pause will always fire before volume mode is entered
         holdFired = true;
         resetGestureState();
@@ -682,7 +684,7 @@ void loop() {
     else if (volumeActive) {
       float delta = current - volumeRefDist;  // calculates the change in distance since last volume step
 
-      // first, check if the hand speed exceeds the max speed of 30cm/s. if it does, exit volume mode
+      // first, check if the hand speed exceeds the max speed of 45cm/s. if it does, exit volume mode
       if (speed > EXIT_SPEED) {
         volumeActive = false;
         resetGestureState();
@@ -697,7 +699,7 @@ void loop() {
         }
       }
 
-      else if (current < DETECT_MIN + EDGE && millis() - stillSince >= EDGE_HOLD_MS) {
+      else if (current < INNER_EDGE && millis() - stillSince >= EDGE_HOLD_MS) {
         if (millis() - lastVolumeStep >= VOL_STEP_MS) {
           sendMediaKey(KEY_VOL_DOWN, "VOL-");
           startAnim(ANIM_VOL_DN);
