@@ -11,7 +11,7 @@ Adafruit_VL53L0X sensor = Adafruit_VL53L0X();  // creates the sensor object
 #include <FastLED.h>
 
 // defines which variables we use
-#define BOARD 2  // 2 = PCB v2, 1 = PCB v1, 0 = perfboard
+#define BOARD 0  // 2 = PCB v2, 1 = PCB v1, 0 = perfboard
 
 // preprocessor directive
 #if BOARD == 2
@@ -138,9 +138,9 @@ const float EDGE = 2.0; // used when user holds hand at zone min or max while in
 const unsigned long EDGE_HOLD_MS = 250;  // hold at the edge for 250ms = start repeating volume action
 
 // used to detect a fast exit from volume mode
-float lastSampleDist = 0;
+float lastSampleDistance = 0;
 unsigned long lastSampleTime = 0;
-const float EXIT_SPEED = 30.0;   // cm/s outward = withdrawal
+const float EXIT_SPEED = 30.0;  // anything more than 30cm/s outward = exiting from volume mode
 
 // used to detect volume mode entry
 unsigned long stillSince = 0;
@@ -618,6 +618,8 @@ void loop() {
     holdFired = false;
     stillSince = millis();
     prevDistance = current;
+    lastSampleDistance = current;
+    lastSampleTime = millis();
   }
 
   else if (handConfirmedGone && handInZone) {  // hand just left
@@ -650,6 +652,15 @@ void loop() {
       prevDistance = current;
     }
 
+    // speed detection
+    float speed = 0;
+    unsigned long dt = millis() - lastSampleTime;
+    if (dt > 0) {
+      speed = ((current - lastSampleDistance) / dt) * 1000.0;  // hand speed in cm/s, measured from change in distance since last loop iteration over change in time
+    }
+    lastSampleDistance = current;
+    lastSampleTime = millis();
+
     if (!holdFired) {
       // if it's been 300ms since the last movement
       if (millis() - stillSince >= HOLD_TIME) {  // steady hold = play/pause. if hand is held still, play/pause will always fire before volume mode is entered
@@ -671,8 +682,14 @@ void loop() {
     else if (volumeActive) {
       float delta = current - volumeRefDist;  // calculates the change in distance since last volume step
 
-      // first check if the hand is held still at an edge (still increasing or decreasing volume)
-      if (current >= zoneMax - EDGE && millis() - stillSince > EDGE_HOLD_MS) {
+      // first, check if the hand speed exceeds the max speed of 30cm/s. if it does, exit volume mode
+      if (speed > EXIT_SPEED) {
+        volumeActive = false;
+        resetGestureState();
+      }
+
+      // check if the hand is held still at an edge (still increasing or decreasing volume)
+      else if (current >= zoneMax - EDGE && millis() - stillSince > EDGE_HOLD_MS) {
         if (millis() - lastVolumeStep >= VOL_STEP_MS) {
           sendMediaKey(KEY_VOL_UP, "VOL+");
           startAnim(ANIM_VOL_UP);
