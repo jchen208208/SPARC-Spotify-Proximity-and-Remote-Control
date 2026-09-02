@@ -526,7 +526,7 @@
       "netlist": "",
       "plot": "C:/Users/swkma/Desktop/sparc_gerber/",
       "specctra_dsn": "",
-      "step": "",
+      "step": "sparc_pcb_v2.step",
       "vrml": ""
     },
     "page_layout_descr_file": ""
