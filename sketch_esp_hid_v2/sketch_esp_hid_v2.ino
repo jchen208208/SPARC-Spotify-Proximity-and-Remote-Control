@@ -348,7 +348,8 @@ void renderAnim() {
   for (int i = 0; i < NUMPIXELS; i++) {
     int behind = (anim == ANIM_PREV || anim == ANIM_VOL_DN) ? i - head : head - i;
     if (behind >= 0 && behind < 3) {          // lit head plus a short tail
-      leds[i] = barColour((float)i / (NUMPIXELS - 1));
+      leds[i] = looping ? volWaitColour((float)i / (NUMPIXELS - 1))
+                         : barColour((float)i / (NUMPIXELS - 1));
       leds[i].nscale8(255 >> (behind * 2));
     } else {
       leds[i] = CRGB::Black;
