@@ -1,12 +1,10 @@
-// uses BLE HID media remote with no Spotify API or app.
-// BLE (BLuetooth Low Energy) transmits and recieves bytes with the device
-// HID (Human Interface Device) defines what those bytes mean (i.e. ours functions as a media input device)
+// SPARC as a BLE HID media remote - no Spotify API, no companion app.
 #include <NimBLEDevice.h>
 #include <NimBLEHIDDevice.h>
 
 #include <Wire.h>
 #include "Adafruit_VL53L0X.h"
-Adafruit_VL53L0X sensor = Adafruit_VL53L0X();  // creates the sensor object
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
 #include <FastLED.h>
 
@@ -31,88 +29,100 @@ Adafruit_VL53L0X sensor = Adafruit_VL53L0X();  // creates the sensor object
   const int ledPause = 4;
 #endif
 
-#define NUMPIXELS 8  // our strip has 8 LED's
-CRGB leds[NUMPIXELS];  // CRGB type holds three numbers for each entry (rgb value for each LED)
+#define NUMPIXELS 8
 
-// declaring the 7 functions so an input signal can be sent as one byte over BLE to the device which each bit representing a button
+CRGB leds[NUMPIXELS];
+
+// Consumer Control only - deliberately NO keyboard usage page. iOS hides the
+// on-screen keyboard system-wide for anything that declares itself a keyboard,
+// which would stop the user typing in every app while SPARC is connected.
 static const uint8_t REPORT_ID = 1;
 static uint8_t reportMap[] = {
-  0x05, 0x0C,  // Usage Page (Consumer)
-  0x09, 0x01,  // Usage (Consumer Control)
-  0xA1, 0x01,  // Collection (Application)
-  0x85, REPORT_ID,  //   Report ID (1)
-  0x15, 0x00,  //   Logical Minimum (0), meaning each "button" is on or off
-  0x25, 0x01,  //   Logical Maximum (1)
-  0x75, 0x01,  //   Report Size (1), each input takes 1 bit
-  0x95, 0x07,  //   Report Count (7), and there are 7 inputs
-  0x09, 0xB5,  //   Scan Next Track, bit 0
-  0x09, 0xB6,  //   Scan Previous Track, bit 1
-  0x09, 0xB7,  //   Stop, ...
-  0x09, 0xCD,  //   Play/Pause
-  0x09, 0xE2,  //   Mute
-  0x09, 0xE9,  //   Volume Increment
-  0x09, 0xEA,  //   Volume Decrement, bit 6
-  0x81, 0x02,  //   Input (Data, Variable, Absolute)
-  0x95, 0x01,  //   Report Count (1)
-  0x81, 0x03,  //   Input (Constant)
-  0xC0  // End Collection
+  0x05, 0x0C,        // Usage Page (Consumer)
+  0x09, 0x01,        // Usage (Consumer Control)
+  0xA1, 0x01,        // Collection (Application)
+  0x85, REPORT_ID,   //   Report ID (1)
+  0x15, 0x00,        //   Logical Minimum (0)
+  0x25, 0x01,        //   Logical Maximum (1)
+  0x75, 0x01,        //   Report Size (1)
+  0x95, 0x07,        //   Report Count (7)
+  0x09, 0xB5,        //   Scan Next Track      -> bit 0
+  0x09, 0xB6,        //   Scan Previous Track  -> bit 1
+  0x09, 0xB7,        //   Stop                 -> bit 2
+  0x09, 0xCD,        //   Play/Pause           -> bit 3
+  0x09, 0xE2,        //   Mute                 -> bit 4
+  0x09, 0xE9,        //   Volume Increment     -> bit 5
+  0x09, 0xEA,        //   Volume Decrement     -> bit 6
+  0x81, 0x02,        //   Input (Data, Variable, Absolute)
+  0x95, 0x01,        //   Report Count (1)
+  0x81, 0x03,        //   Input (Constant) - pad to a whole byte
+  0xC0               // End Collection
 };
 
-const uint8_t KEY_NEXT = 1 << 0;  // 00000001
-const uint8_t KEY_PREV = 1 << 1;  // 00000010
-const uint8_t KEY_PLAY_PAUSE = 1 << 3;  // 00001000
-const uint8_t KEY_VOL_UP = 1 << 5;  // 00100000
-const uint8_t KEY_VOL_DOWN = 1 << 6;  // 01000000
+const uint8_t KEY_NEXT       = 1 << 0;
+const uint8_t KEY_PREV       = 1 << 1;
+const uint8_t KEY_PLAY_PAUSE = 1 << 3;
+const uint8_t KEY_VOL_UP     = 1 << 5;
+const uint8_t KEY_VOL_DOWN   = 1 << 6;
 
-// A zero-length press is ignored by some devices so we need to hold the bit briefly.
+// A zero-length press is ignored by some hosts, so hold the bit briefly.
 const unsigned long KEY_HOLD_MS = 15;
 
 NimBLEHIDDevice *hid = nullptr;
-NimBLECharacteristic *inputReport = nullptr;  // the channel that transports the input byte
+NimBLECharacteristic *inputReport = nullptr;
 NimBLEServer *pServer = nullptr;
-volatile bool bleConnected = false;  // volatile means the variable can change without the code inside main() touching it
+volatile bool bleConnected = false;
 volatile bool authDone = false;
 volatile uint16_t connHandle = 0;
-bool wasConnected = false;  // if (bleConnected && !wasConnected) = just connected,  if (!bleConnected && wasConnected) = just disconnected
-char peerAddr[24] = "";  // holds the device's BT address
+bool wasConnected = false;
+char peerAddr[24] = "";
 
-// Apple Media Service: Apple's protocol that lets a BT device read what's currently playing on an iPhone.
-// used to determine if the paired device is an iPhone?
+// Apple Media Service: iOS pushes now-playing state to accessories over GATT - it's
+// what Apple Watch uses. Unlike a volume estimate this is a closed loop, since every
+// play/pause/seek re-anchors it, so drift can't accumulate. iOS only; on anything
+// else discovery just fails and the strip stays in gesture-animation mode.
 static const char *AMS_SERVICE       = "89D3502B-0F36-433A-8EF4-C502AD55F8DC";
 static const char *AMS_ENTITY_UPDATE = "2F7CABCE-808D-411F-9A0C-BB92BA96C102";
 
 bool amsFound = false;
-int amsTries = 0;  // gives up after 5 attempts
-unsigned long amsNextTry = 0;  // when to retry
+int amsTries = 0;
+unsigned long amsNextTry = 0;
 
-float amsElapsed = 0;  // seconds into the track, as of amsLastUpdate
-float amsRate = 1.0;  // playback speed
-float amsDuration = 0;  // track length
-int amsState = 0;  // 0 paused, 1 playing, 2 rewinding, 3 fast-forwarding
-unsigned long amsLastUpdate = 0;
+float amsElapsed = 0;    // seconds into the track, as of amsAnchor
+float amsRate = 1.0;
+float amsDuration = 0;
+int amsState = 0;        // 0 paused, 1 playing, 2 rewinding, 3 fast-forwarding
+unsigned long amsAnchor = 0;
 
-// detection zone boundary in cm. whatever's parked within 1m of the sensor for 5+ seconds becomes the "back wall," and the gesture zone is from the sensor to the wall.
-// falls back to a fixed 30cm boundary when nothing is sitting in range.
-const float DETECT_MIN = 4.0;  // VL53L0X readings break down below ~4cm, so treat anything closer as out of zone
+// Zone boundary in cm. Auto-calibrated: whatever's parked within 1m of the
+// sensor for 5+ seconds becomes the "back wall," and the gesture zone runs
+// from the sensor out to just short of it.
+// Falls back to a fixed 30cm boundary when nothing is sitting in range.
+const float DETECT_MIN = 2.0;
 const float DEFAULT_ZONE_MAX = 30.0;
-float zoneMax = DEFAULT_ZONE_MAX;
+float zoneMax = DEFAULT_ZONE_MAX;  // Zone: DETECT_MIN..zoneMax → all gestures
 
-const float CALIBRATION_RANGE = 100.0;  // only consider objects within 1m
-const float CALIBRATION_MIN = 10.0;  // any stable object within 10cm is more likely to be a resting hand
-const unsigned long CALIBRATION_HOLD_MS = 5000;  // must sit still 5 seconds to lock in calibration
-const float CALIBRATION_TOLERANCE = 3.0;  // cm of wobble still counted as "the same object"
-const unsigned long CALIB_LOSS_MS = 1000;  // how long to wait for
-const float CALIBRATION_MARGIN = 0.2;
+// Calibration tuning
+const float CALIBRATION_RANGE = 100.0;          // only consider objects within 1m
+const float CALIBRATION_MIN = 10.0;             // ignore stable reads closer than this - more likely a resting hand than a backdrop
+const unsigned long CALIBRATION_HOLD_MS = 5000; // must sit still this long to lock in
+const float CALIBRATION_TOLERANCE = 3.0;        // cm of wobble still counted as "the same object"
+const unsigned long CALIB_LOSS_MS = 1000;       // debounce before reverting to default
+const float CALIBRATION_MARGIN = 0.2;           // fraction of the backdrop distance kept clear above the zone
 
-float calibRefDist = -1;  // the wall's distance
-unsigned long calibStableSince = 0;  // when it stopped moving
-unsigned long calibNoObjectSince = 0;  // when it disappeared
+float calibRefDist = -1;
+unsigned long calibStableSince = 0;
+unsigned long calibNoObjectSince = 0;
 bool isCalibrated = false;
 
-// gesture timings
-const float VOLUME_DISTANCE_INCREASE = 8.0;  // how far past zoneMax the hand may drift while volume mode runs
-const unsigned long HOLD_TIME = 150;  // stillness needed for play/pause. a pass slower than MOVE_NOISE/HOLD_TIME cm/s fires one by mistake
-const unsigned long MULTI_PASS_WINDOW = 680;  // all three passes must land inside this, and next/prev must wait this long before firing
+// Gesture timing
+const unsigned long HOLD_TIME = 300;
+const unsigned long DOUBLE_PASS_WINDOW = 800;
+
+// Time, not sample count: the VL53L0X's blocking read paces the loop, so a fixed
+// number of samples drifts with the sensor's timing budget.
+// Long enough to ride out a dropout mid-wave, short enough that two quick waves are
+// still seen as two passes rather than one continuous hold.
 const unsigned long OUT_OF_RANGE_MS = 100;
 
 // Non-blocking LED flash
@@ -121,71 +131,84 @@ unsigned long flashStart = 0;
 const unsigned long FLASH_DURATION = 150;
 
 bool handInZone = false;
+unsigned long handEntryTime = 0;
 bool holdFired = false;
 
 int passCount = 0;
 unsigned long firstPassExitTime = 0;
 
-// Volume mode: entered when no steady hold for a period of time. while active, hand movement acts as a slider: <this many> cm of travel sends one volume step in that direction.
-bool volumeActive = false;
-unsigned long volumeEnteredAt = 0;  // when volume mode armed
-float volumeCenter = 0;  // where the hand settled when volume mode armed. -1 until anchored
-const float VOLUME_DEAD = 2.0;  // no-change region either side of the centre, so a parked hand doesn't flip between up and down
-const unsigned long VOLUME_GRACE_MS = 600;  // after arming, wait this long before repeating starts
-unsigned long lastVolumeStep = 0;  // stores the last time a volume signal was sent
-const unsigned long VOL_STEP_MS = 100;  // repeat interval while held off-centre, so a full sweep takes about 1.6s
+// Volume mode: entered by a pass followed immediately by a hold - skip, then
+// pause. The distance at that hold becomes a fixed centre point: held farther
+// away than VOLUME_DEADZONE_CM from it, the volume ramps up; held nearer than
+// that, it ramps down; parked within the dead zone, the ramp pauses. It's
+// level-triggered and re-evaluated every loop, so crossing back over centre -
+// or reversing direction - takes effect immediately, no separate gesture
+// needed. Leaving the zone at any point exits volume mode - there's no
+// separate hold-to-exit.
+bool volumeMode = false;
+bool volumeActive = false;       // a ramp (timed VOL+/VOL- sends) is currently ticking
+bool volumeUp = false;           // direction of the current ramp
+unsigned long lastVolumeTick = 0;
+const unsigned long VOLUME_INTERVAL = 80; // was 200 - faster ramp
+float zoneEntryDist = 0;         // distance at zone entry; while in volume mode
+                                  // this is the fixed centre ramp direction is
+                                  // measured against (set once, never re-baselined)
+float lastInZoneDist = 0;        // latest distance reading while still in zone
+const float VOLUME_DEADZONE_CM = 2.0; // how far from centre before it starts ramping
 
-// used to detect a fast exit from volume mode
-float lastSampleDistance = 0;
-unsigned long lastSampleTime = 0;
-const float EXIT_SPEED = 90.0;  // if hand moves >= 90cm/s upwards, it means to exit volume mode and not increase volume
-const unsigned long SPEED_WINDOW_MS = 100;  // only refresh dx/dt after 100ms as passed
-float speed = 0.0;
-
-// used to detect volume mode entry
-unsigned long stillSince = 0;
-float prevDistance = 0;
-const float MOVE_NOISE = 1.0;
-
-// animation enums
-enum Anim {ANIM_NONE, ANIM_NEXT, ANIM_PREV, ANIM_PULSE, ANIM_VOL_UP, ANIM_VOL_DN};
+// The strip can't show the host's volume - nothing comes back over HID to read, and
+// an open-loop estimate desyncs the moment the user touches the volume themselves.
+// It confirms gestures instead, which needs no host state and so is never wrong.
+enum Anim { ANIM_NONE, ANIM_NEXT, ANIM_PREV, ANIM_PULSE, ANIM_VOL_UP, ANIM_VOL_DN, ANIM_VOL_WAIT };
 Anim anim = ANIM_NONE;
 unsigned long animStart = 0;
-const unsigned long ANIM_STEP = 45;  // how man ms an LED lights up for
-const unsigned long PULSE_MS = 320;  // how long the play/pause animation lasts for
-const unsigned long FRAME_MS = 20;  // the minimum gap between two strip animations
+const unsigned long ANIM_STEP = 45;   // ms per LED
+const unsigned long PULSE_MS = 320;
+const unsigned long FRAME_MS = 20;    // cap redraws; WS2812B writes are not free
 unsigned long lastFrame = 0;
-unsigned long outOfRangeSince = 0;
 
-// variables used for debugging
-const unsigned long DEBUG_PRINT_INTERVAL = 200;
-unsigned long lastDebugPrint = 0;
-
-bool sensorReady = false;
-
-// returns sensor distance
-float readDistanceCm() {
-  if (!sensorReady) {
-    return -1;
-  }
-  VL53L0X_RangingMeasurementData_t reading;  // holds the distance, a status code, signal strength.
-  sensor.rangingTest(&reading, false);  // false turns off the library's debug printing
-  if (reading.RangeStatus != 0) {
-    return -1;  // 0 is the only valid status, 1,2,3,5 return garbage
-  }
-  return reading.RangeMilliMeter / 10.0; // converts mm to cm
+// pos 0..1 along the strip, pink at the start → purple at the end. Used for the
+// volume-mode "parked" indicator so it reads distinctly from the blue used
+// everywhere else (track skips, the ramp comet, the progress bar).
+CRGB volWaitColour(float pos) {
+  int r = map(pos * 100, 0, 100, 255, 148);
+  int g = map(pos * 100, 0, 100,  20,   0);
+  int b = map(pos * 100, 0, 100, 147, 211);
+  return CRGB(r, g, b);
 }
 
-// calibration function, current is the latest distance reading
+unsigned long outOfRangeSince = 0;
+
+// Debug: periodic Serial dump of raw distance + current zone state.
+const unsigned long DEBUG_PRINT_INTERVAL = 200; // ms between prints - 5/sec is readable, doesn't flood
+unsigned long lastDebugPrint = 0;
+
+// False if the VL53L0X never came up. Gestures stop working, but Bluetooth keeps
+// running so the board still pairs and looks alive, rather than going dark.
+bool sensorReady = false;
+
+float readDistanceCm() {
+  if (!sensorReady) return -1;             // never poke a sensor that isn't there
+  VL53L0X_RangingMeasurementData_t measure;
+  lox.rangingTest(&measure, false);
+  if (measure.RangeStatus != 0) return -1; // 0 is the only valid status; 1,2,3,5 return garbage
+  return measure.RangeMilliMeter / 10.0;   // mm → cm
+}
+
+// Watches for something parked within 1m of the sensor. If it holds still long
+// enough, that becomes the new outer edge of the gesture zone. A hand gesturing
+// through never holds still for the full 5 seconds - its distance keeps
+// changing, which restarts the clock below - so normal use can't trigger this,
+// only something left sitting in front of the sensor (a monitor stand, a wall,
+// a mug).
 void updateCalibration(float current) {
-  bool objectPresent = (current >= DETECT_MIN && current <= CALIBRATION_RANGE);  // true if something is between DETECT_MIN and 1m. 
+  bool objectPresent = (current >= DETECT_MIN && current <= CALIBRATION_RANGE);
 
   if (!objectPresent) {
-    // nothing within 1m = debounce briefly then fall back to the fixed default zone.
-    if (calibNoObjectSince == 0) {
-      calibNoObjectSince = millis();
-    }
-    if (isCalibrated && (millis() - calibNoObjectSince >= CALIB_LOSS_MS)) {
+    // Nothing within 1m - debounce briefly (a single dropped sample shouldn't
+    // undo a calibration), then fall back to the fixed default zone.
+    if (calibNoObjectSince == 0) calibNoObjectSince = millis();
+    if (isCalibrated && millis() - calibNoObjectSince >= CALIB_LOSS_MS) {
       zoneMax = DEFAULT_ZONE_MAX;
       isCalibrated = false;
       Serial.println("No object within 1m - zone reset to default 30cm");
@@ -194,32 +217,30 @@ void updateCalibration(float current) {
     calibStableSince = 0;
     return;
   }
-
-  // if it reaches here, that means object is within 1m
   calibNoObjectSince = 0;
 
   float diff = current - calibRefDist;
-  if (diff < 0) {
-    diff = -diff;
-  }
+  if (diff < 0) diff = -diff;
 
   if (calibRefDist < 0 || diff > CALIBRATION_TOLERANCE) {
-    // first sighting or the reading moved enough that this isn't the same object
+    // First sighting, or it moved enough that this isn't the same dwell - restart the clock.
     calibRefDist = current;
     calibStableSince = millis();
     return;
   }
 
-  // if it reaches here, that means there's been a stable object for some time
   calibRefDist = (calibRefDist * 0.9f) + (current * 0.1f); // smooth out sensor jitter
 
   if (millis() - calibStableSince >= CALIBRATION_HOLD_MS && calibRefDist >= CALIBRATION_MIN) {
-    // the object held still 5s and it's at least 10cm away
-    float margin = calibRefDist * CALIBRATION_MARGIN; // 20% of the distance
-    if (margin < CALIBRATION_TOLERANCE) {
-      margin = CALIBRATION_TOLERANCE;  // never under 3cm
-    }
-    zoneMax = calibRefDist - margin;  // stops the zone just short of the wall bc if you parked zoneMax on the wall, sensor jitter would make the wall itself flicker in and out of the zone 
+    // Stop the gesture range short of the backdrop. Parking zoneMax on the object
+    // itself put it right on the inclusive edge of inZone, so sensor jitter around
+    // calibRefDist read as a hand entering and leaving the zone with nothing there -
+    // spurious gestures. The margin scales with distance because so does the noise.
+    // Never less than the wobble we already tolerate as "the same object", or a
+    // close backdrop would sit back inside the zone again.
+    float margin = calibRefDist * CALIBRATION_MARGIN;
+    if (margin < CALIBRATION_TOLERANCE) margin = CALIBRATION_TOLERANCE;
+    zoneMax = calibRefDist - margin;
     if (!isCalibrated) {
       isCalibrated = true;
       Serial.print("Zones calibrated to object at ");
@@ -229,11 +250,8 @@ void updateCalibration(float current) {
   }
 }
 
-// LED helpers
 void flashLed(int pin) {
-  if (flashPin >= 0) {
-    digitalWrite(flashPin, LOW);  // stop any flash already running
-  }
+  if (flashPin >= 0) digitalWrite(flashPin, LOW);
   digitalWrite(pin, HIGH);
   flashPin = pin;
   flashStart = millis();
@@ -241,15 +259,15 @@ void flashLed(int pin) {
 
 void handleFlash() {
   if (flashPin >= 0 && millis() - flashStart >= FLASH_DURATION) {
-    digitalWrite(flashPin, LOW);  // stops any flash over 150ms
+    digitalWrite(flashPin, LOW);
     flashPin = -1;
   }
 }
 
-// pos = 0.0 to 1.0 along the strip. the strip fades light blue (120, 200, 255) at the start tp dark blue (0, 0, 120) at the end
+// pos 0..1 along the strip. SPARC blue: light blue at the start → dark blue at the end.
 CRGB barColour(float pos) {
-  int r = map(pos * 100, 0, 100, 120, 0);  // "pos*100 is somewhere in 0–100. Map it into 120–0."
-  int g = map(pos * 100, 0, 100, 200, 0);
+  int r = map(pos * 100, 0, 100, 120,   0);
+  int g = map(pos * 100, 0, 100, 200,   0);
   int b = map(pos * 100, 0, 100, 255, 120);
   return CRGB(r, g, b);
 }
@@ -261,54 +279,57 @@ void stripOff() {
 
 // AMS only pushes on change, so interpolate between updates for a smooth bar.
 void renderProgress() {
-  if (amsDuration < 1.0) {
-    return; // no track loaded yet
-  }
+  if (amsDuration < 1.0) return; // no track loaded yet
 
   float pos = amsElapsed;
-  if (amsState == 1) {  // if track playing
-    pos += (millis() - amsLastUpdate) / 1000.0f * amsRate;  // updates how far along the track (ms to s)
-  }
-  float frac = constrain(pos / amsDuration, 0.0f, 1.0f);  // fraction of track done
+  if (amsState == 1) pos += (millis() - amsAnchor) / 1000.0f * amsRate;
+  float frac = constrain(pos / amsDuration, 0.0f, 1.0f);
 
-  float lit = frac * NUMPIXELS;  // amoutn of LEDs that should be lit
-  int full = (int)lit;  // how many fully lit ones
-  uint8_t partial = (uint8_t)((lit - full) * 255);  // partial brightness: 0.52 = 133 brightness or 133 flashes out of a 255 cycle
+  float lit = frac * NUMPIXELS;
+  int full = (int)lit;
+  uint8_t partial = (uint8_t)((lit - full) * 255);
 
   for (int i = 0; i < NUMPIXELS; i++) {
-    leds[i] = barColour((float)i / (NUMPIXELS - 1));  // stores the leds' colour
-    if (i > full) {
-      leds[i] = CRGB::Black;  // if it's past the progress bar, turn it black (no colour)
-    }
-    else if (i == full) {
-      leds[i].nscale8(partial); // the last led is dimmed
-    }
+    leds[i] = barColour((float)i / (NUMPIXELS - 1));
+    if (i > full)       leds[i] = CRGB::Black;
+    else if (i == full) leds[i].nscale8(partial); // part-lit head keeps 8 pixels smooth
   }
   FastLED.show();
 }
 
-// starts a gesture animation
 void startAnim(Anim a) {
   anim = a;
   animStart = millis();
 }
 
-// draws one animation frame and clears itself when done.
+// Non-blocking: called every loop, draws one frame and clears itself when done.
 void renderAnim() {
-  if (anim == ANIM_NONE) {
-    return;
+  if (anim == ANIM_NONE) return;
+  unsigned long t = millis() - animStart;
+
+  if (anim == ANIM_VOL_WAIT) {
+    // Odd and even pixels breathe against each other, one full swap per
+    // second - even brightens while odd dims, then reverses. sin() gives a
+    // smooth crossfade instead of a hard on/off flicker; the two levels are
+    // exact opposites (phase-shifted by PI) so total brightness stays roughly
+    // constant as it swaps.
+    const unsigned long VOL_WAIT_PERIOD_MS = 1000;
+    float phase = (t % VOL_WAIT_PERIOD_MS) / (float)VOL_WAIT_PERIOD_MS; // 0..1
+    float evenLevel = (sin(2 * PI * phase) + 1.0f) / 2.0f;              // 0..1
+    float oddLevel  = 1.0f - evenLevel;
+
+    for (int i = 0; i < NUMPIXELS; i++) {
+      leds[i] = volWaitColour((float)i / (NUMPIXELS - 1));
+      float level = (i % 2 == 0) ? evenLevel : oddLevel;
+      leds[i].nscale8((uint8_t)(level * 255));
+    }
+    FastLED.show();
+    return; // still non-expiring - just cycles until volumeMode/volumeActive changes
   }
 
-  unsigned long t = millis() - animStart;  // ms into the animation
-
-  // pause/play animation
   if (anim == ANIM_PULSE) {
-    if (t >= PULSE_MS) {
-      anim = ANIM_NONE;
-      stripOff();
-      return;
-      }
-    uint8_t fade = 255 - (255 * ((float)t / PULSE_MS));  // the longer into the pulse animation, the dimmer the leds.
+    if (t >= PULSE_MS) { anim = ANIM_NONE; stripOff(); return; }
+    uint8_t fade = 255 - (t * 255 / PULSE_MS);
     for (int i = 0; i < NUMPIXELS; i++) {
       leds[i] = barColour((float)i / (NUMPIXELS - 1));
       leds[i].nscale8(fade);
@@ -317,228 +338,201 @@ void renderAnim() {
     return;
   }
 
-  // the swipes (next/prev/volume)
-  unsigned long frame = t / ANIM_STEP;  // 45ms per step so ex: 90ms = frame 2
+  unsigned long frame = t / ANIM_STEP;
   bool looping = (anim == ANIM_VOL_UP || anim == ANIM_VOL_DN);
-  if (!looping && frame >= NUMPIXELS) {
-    // next/prev swipe once and stop (so 8 frames × 45ms = 360ms). 
-    anim = ANIM_NONE;
-    stripOff();
-    return;
-    }
+  if (!looping && frame >= NUMPIXELS) { anim = ANIM_NONE; stripOff(); return; }
 
   int head = frame % NUMPIXELS;
-  if (anim == ANIM_PREV || anim == ANIM_VOL_UP) {
-    head = NUMPIXELS - 1 - head;  // mirrors the position
-  }
+  if (anim == ANIM_PREV || anim == ANIM_VOL_DN) head = NUMPIXELS - 1 - head;
 
   for (int i = 0; i < NUMPIXELS; i++) {
-    int behind = (anim == ANIM_PREV || anim == ANIM_VOL_UP) ? i - head : head - i;  //  how far this current LED sits behind the moving head.
-    if (behind >= 0 && behind < 3) {  // if the led is "behind" the head. behind < 3 is so that our swipe animation only has a trail of 3 LEDs
+    int behind = (anim == ANIM_PREV || anim == ANIM_VOL_DN) ? i - head : head - i;
+    if (behind >= 0 && behind < 3) {          // lit head plus a short tail
       leds[i] = barColour((float)i / (NUMPIXELS - 1));
-      leds[i].nscale8(255 >> (behind * 2));  // >> shifts the binary digits to the right. Each shift drops the rightmost bit which halves the number.
-      // (behind * 2) causes an eponentially dimmer tail: (255, 63, 15)
-    }
-    else {
+      leds[i].nscale8(255 >> (behind * 2));
+    } else {
       leds[i] = CRGB::Black;
     }
   }
   FastLED.show();
 }
 
-// press a "button" and release. Leaving a bit set = a stuck key
-void sendMediaKey(uint8_t byte, const char *label) {
-  if (!bleConnected || inputReport == nullptr) {  // if no device connected or the input channel doesn't exist yet
-    return;
-  }
+// Press and release. Leaving a bit set reads as a stuck key - for volume the
+// host would auto-repeat forever.
+void sendMediaKey(uint8_t mask, const char *label) {
+  if (!bleConnected || inputReport == nullptr) return;
 
-  uint8_t value = byte;
-  inputReport->setValue(&value, 1);  // loads one byte intot he channel
-  (*inputReport).notify();  // notify() sends one byte to the phone
-  delay(KEY_HOLD_MS);  // 15ms, wait then release
-  value = 0;
-  inputReport->setValue(&value, 1);  // all 0's = nothing is pressed, aka release
+  uint8_t v = mask;
+  inputReport->setValue(&v, 1);
+  inputReport->notify();
+  delay(KEY_HOLD_MS);
+  v = 0;
+  inputReport->setValue(&v, 1);
   inputReport->notify();
 
   Serial.print("SENT: ");
   Serial.println(label);
 }
 
-// called whenever iOS pushes an update
-// notification payload: [EntityID][AttributeID][flags][value as UTF-8].
+// Notification payload: [EntityID][AttributeID][flags][value as UTF-8].
 void amsNotify(NimBLERemoteCharacteristic *chr, uint8_t *data, size_t len, bool isNotify) {
-  if (len < 3) {
-    return;  // too short to even have header bytes
-  }
+  if (len < 3) return;
 
   char buf[48];
-  size_t n = len - 3;  // how many text bytes there are
-  if (n >= sizeof(buf)) {
-    n = sizeof(buf) - 1;  // prevents buffer overflow
-  }
-  memcpy(buf, data + 3, n);  // data + 0 and 1 are headers, data + 2 is flags, and data + 3 is the actualy text data
+  size_t n = len - 3;
+  if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+  memcpy(buf, data + 3, n);
   buf[n] = '\0';
 
-  if (data[0] == 0 && data[1] == 1) {  // Player, PlaybackInfo
-    // "state,rate,elapsed": i.e. "1,1.0,45.2"
-    char *fields[3] = {buf, nullptr, nullptr};
-    int nfields = 1;
-    for (char *c = buf; *c && nfields < 3; c++) {
-      if (*c == ',') {
-        *c = '\0';
-        fields[nfields++] = c + 1;  // stores the address of the character after the comma
-        }
+  if (data[0] == 0 && data[1] == 1) {        // Player / PlaybackInfo
+    // "state,rate,elapsed" - any field may arrive empty, so keep the last known value.
+    char *f[3] = {buf, nullptr, nullptr};
+    int nf = 1;
+    for (char *c = buf; *c && nf < 3; c++) {
+      if (*c == ',') { *c = '\0'; f[nf++] = c + 1; }
     }
-    if (amsState == 1) {  // prevents lag behinds on the progress bar if given a partial PlaybackInfo update
-      amsElapsed += (millis() - amsLastUpdate) / 1000.0f * amsRate;
-      amsLastUpdate = millis();
-    }
-    if (fields[0] && *fields[0]) {
-      amsState = atoi(fields[0]); // string to int
-    }
-    if (fields[1] && *fields[1]) {
-      amsRate = atof(fields[1]);  // string to float
-    }
-    if (fields[2] && *fields[2]) {
-      amsElapsed = atof(fields[2]);  // if track is playing and there is an elapsed field, then the amsElpased we set just gets overwritten
-    }
-  }
-  else if (data[0] == 2 && data[1] == 3) { // Track, Duration
+    if (f[0] && *f[0]) amsState   = atoi(f[0]);
+    if (f[1] && *f[1]) amsRate    = atof(f[1]);
+    if (f[2] && *f[2]) amsElapsed = atof(f[2]);
+    amsAnchor = millis();
+  } else if (data[0] == 2 && data[1] == 3) { // Track / Duration
     amsDuration = atof(buf);
   }
 }
 
-// connection attempt
+// We're the peripheral, but GATT is symmetric - NimBLEServer::getClient() hands us a
+// client for the inbound connection so we can read services on the phone.
 void setupAMS() {
   NimBLEClient *client = pServer->getClient(connHandle);
-  if (!client) {
-    return;
-  }
+  if (!client) return;
 
-  NimBLERemoteService *service = client->getService(AMS_SERVICE);
-  if (!service) { // not found means not iOS,
+  NimBLERemoteService *svc = client->getService(AMS_SERVICE);
+  if (!svc) {
     Serial.println("AMS not offered - gesture animations only");
     return;
   }
 
-  NimBLERemoteCharacteristic *eu = service->getCharacteristic(AMS_ENTITY_UPDATE);
-  if (!eu || !eu->subscribe(true, amsNotify)) {  // hands over amsNotify as the callback, subscribe means whenever the value inside eu changes, run amsNotify
+  NimBLERemoteCharacteristic *eu = svc->getCharacteristic(AMS_ENTITY_UPDATE);
+  if (!eu || !eu->subscribe(true, amsNotify)) {
     Serial.println("AMS entity update subscribe failed");
     return;
   }
 
-  const uint8_t wantPlayer[] = {0, 1}; // Player, PlaybackInfo: (state, rate, elapsed)
-  const uint8_t wantTrack[]  = {2, 3}; // Track, Duration
+  const uint8_t wantPlayer[] = {0, 1}; // Player -> PlaybackInfo (state, rate, elapsed)
+  const uint8_t wantTrack[]  = {2, 3}; // Track  -> Duration
   eu->writeValue(wantPlayer, sizeof(wantPlayer), true);
   eu->writeValue(wantTrack, sizeof(wantTrack), true);
 
-  amsFound = true;  // only set if everything previously succeeded
+  amsFound = true;
   Serial.println("AMS connected - progress bar active");
 }
 
-// required for NimBLE connection events
+// Only flags state - the LED teardown happens in loop() so FastLED is never
+// driven from the BLE task.
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *server, NimBLEConnInfo &info) override {
-    // ovverid deliberately replaces a base-class fucntion
-    strncpy(peerAddr, info.getIdAddress().toString().c_str(), sizeof(peerAddr) - 1);  // .c_str() creates the plain char pointer strncpy needs
+    // Identity address, not getAddress(): Apple devices rotate their over-the-air
+    // address every few minutes, so that one makes a returning host look brand new.
+    strncpy(peerAddr, info.getIdAddress().toString().c_str(), sizeof(peerAddr) - 1);
     peerAddr[sizeof(peerAddr) - 1] = '\0';
-    connHandle = info.getConnHandle();  // store which connection this is (needed later by setupAMS)
+    connHandle = info.getConnHandle();
     bleConnected = true;
   }
-
   void onDisconnect(NimBLEServer *server, NimBLEConnInfo &info, int reason) override {
     bleConnected = false;
     authDone = false;
     amsFound = false;
     amsTries = 0;
     amsDuration = 0;
-    NimBLEDevice::startAdvertising(); // a BLE device stopes advertising the moment it connects so we want to make sure it starts advertising again on disconnect
+    NimBLEDevice::startAdvertising(); // or it never comes back
   }
-
-  // fires once bonding is done
+  // iOS won't expose AMS until the link is encrypted, so don't probe before bonding.
   void onAuthenticationComplete(NimBLEConnInfo &info) override {
     authDone = true;
     amsNextTry = 0;
   }
 };
 
-// called on disconnect or when a hold fires
 void resetGestureState() {
   passCount = 0;
   volumeActive = false;
+  volumeMode = false;
 }
 
-
 void setup() {
+  // Serial first: with Serial.begin() after lox.begin(), a sensor that doesn't
+  // answer left the board dark with no clue why.
   Serial.begin(9600);
   Serial.println("SPARC booting (BLE HID)");
 
-  NimBLEDevice::init("SPARC");  // name you see when pairing
-  NimBLEDevice::setSecurityAuth(true, false, true);  // bonding (pairing is remembered across reboots), no MITM, secure connections
-  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);  // no input or output (no passcode on connection)
+  NimBLEDevice::init("SPARC");
+  NimBLEDevice::setSecurityAuth(true, false, true); // bonding, no MITM, secure connections
+  NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
 
-
-  // the server holds our services and owns the connections. 
-  pServer = NimBLEDevice::createServer();  // empty server
+  pServer = NimBLEDevice::createServer();
   NimBLEServer *server = pServer;
   server->setCallbacks(new ServerCallbacks());
 
-  hid = new NimBLEHIDDevice(server);  // tells teh HID object where to attach
+  hid = new NimBLEHIDDevice(server);
   inputReport = hid->getInputReport(REPORT_ID);
   hid->setManufacturer("SPARC");
   hid->setPnp(0x02, 0x303A, 0x0001, 0x0100);
   hid->setHidInfo(0x00, 0x01);
-  hid->setReportMap(reportMap, sizeof(reportMap));  // sets the HID service (the 7-button actions)
-  hid->setBatteryLevel(100);  // The board never measures its actual battery for now, so hardcode at 100%
+  hid->setReportMap(reportMap, sizeof(reportMap));
+  hid->setBatteryLevel(100);
   server->start();
 
-  // advertising: GENERIC_HID, not HID_KEYBOARD
+  // GENERIC_HID, not HID_KEYBOARD - see the report map note above.
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
   adv->setAppearance(GENERIC_HID);
   adv->addServiceUUID(hid->getHidService()->getUUID());
   adv->enableScanResponse(true);
   adv->start();
 
-  Wire.begin(I2C_SDA, I2C_SCL);  // starts the I2C as master on these two pings
-  FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);  // registers the our led strip
-  FastLED.setBrightness(10);  // brightness 10 out of 255. Affects every animation and progress bar. ex: head of the swipe animation: colour 120,200,255  ×  255/255 (nscale8)  ×  10/255 (brightness)  =  5,8,10. nscale() is applied to one pixel while setBrightness is applied to every pixel.
+  Wire.begin(I2C_SDA, I2C_SCL);
+
+  FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, NUMPIXELS);
+  FastLED.setBrightness(10);
   FastLED.clear();
   FastLED.show();
 
 
-  // On power-up, the VL53L0X shares the ESP32's rail and is still booting when we get here, so an immediate begin() finds nothing. Wait, retry up to 5 times, and carry on either way so a dead sensor doesn't take Bluetooth down with it.
+  // On a cold power-up the VL53L0X shares the ESP32's rail and is still booting
+  // when we get here, so an immediate begin() finds nothing. Wait, retry, and
+  // carry on either way so a dead sensor can't take Bluetooth down with it.
   delay(200);
   for (int i = 0; i < 5 && !sensorReady; i++) {
-    sensorReady = sensor.begin();
-    if (!sensorReady) {
-      delay(200);
-    }
+    sensorReady = lox.begin();
+    if (!sensorReady) delay(200);
+  }
+  // Gestures used to only need 2-30cm, so a short timing budget traded range for
+  // speed. Calibration now needs to see out to 1m, and skin/clothing reflect IR
+  // far worse than a flat wall - the old high-speed config was losing signal
+  // (and returning invalid RangeStatus) well before that. Long-range mode lowers
+  // the signal-rate threshold to buy back distance.
+  // The budget is still pinned back down afterwards (configSensor sets its own):
+  // long-range's default is slow enough that a fast wave lands in the gaps between
+  // samples again, which is the bug the 20ms budget was here to fix.
+  if (sensorReady) {
+    lox.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);
+    lox.setMeasurementTimingBudgetMicroSeconds(20000);
   }
 
-  if (sensorReady) {
-    sensor.configSensor(Adafruit_VL53L0X::VL53L0X_SENSE_LONG_RANGE);  // long-range mode to look more than 1m for calibration,
-    sensor.setMeasurementTimingBudgetMicroSeconds(20000);  // how long the sensor spends on one measurement
-  }
-
-  if (sensorReady) {
-    Serial.println("VL53L0X ready");
-  }
-  else {
-    Serial.printf("VL53L0X NOT FOUND - check wiring (SDA=%d, SCL=%d, 3V3, GND)\n", I2C_SDA, I2C_SCL);
-  }
+  if (sensorReady) Serial.println("VL53L0X ready");
+  else Serial.printf("VL53L0X NOT FOUND - check wiring (SDA=%d, SCL=%d, 3V3, GND)\n",
+                     I2C_SDA, I2C_SCL);
 
   pinMode(ledPause, OUTPUT);
 
   Serial.println("setup done - advertising as SPARC");
 }
 
-
 void loop() {
-  if (bleConnected && !wasConnected) {  // just connected
+  if (bleConnected && !wasConnected) {
     wasConnected = true;
     Serial.print("BLE connected: ");
     Serial.println(peerAddr);
-  } else if (!bleConnected && wasConnected) {  // just disconnected
+  } else if (!bleConnected && wasConnected) {
     digitalWrite(ledPause, LOW);
     anim = ANIM_NONE;
     stripOff();
@@ -555,187 +549,151 @@ void loop() {
     Serial.println("BLE disconnected");
   }
 
-  float current = readDistanceCm();  // one sensor reading
-
-  // only calibrate when no hand is being tracked to make sure zoneMax doesn't move inward with the hand
-  if (!handInZone) {
-    updateCalibration(current);
-  }
+  float current = readDistanceCm();
+  updateCalibration(current);
 
   if (millis() - lastDebugPrint >= DEBUG_PRINT_INTERVAL) {
     lastDebugPrint = millis();
     Serial.print("dist=");
-    if (current < 0) {
-      Serial.print("--");
-    }
+    if (current < 0) Serial.print("--");
     else Serial.print(current);
-    Serial.print("cm, zone=0-");
+    Serial.print("cm  zone=0-");
     Serial.print(zoneMax);
-    Serial.print(isCalibrated ? ", [calibrated]" : ",, [default]");
-    Serial.print(bleConnected ? "" : ", (not connected)");
+    Serial.print(isCalibrated ? "  [calibrated]" : "  [default]");
+    Serial.print(bleConnected ? "" : "  (not connected)");
     Serial.println();
   }
 
-  if (!bleConnected) {
-    return;
+  if (!bleConnected) return;
+
+  if (volumeActive && millis() - lastVolumeTick >= VOLUME_INTERVAL) {
+    lastVolumeTick = millis();
+    sendMediaKey(volumeUp ? KEY_VOL_UP : KEY_VOL_DOWN, volumeUp ? "VOL+" : "VOL-");
   }
 
-  // renderAnim() never ends volume animations so loop() has to end it
-  if (!volumeActive && (anim == ANIM_VOL_UP || anim == ANIM_VOL_DN)) {
+  // Keep the volume indicator in sync with volumeMode/volumeActive, independent
+  // of the gesture state machine below (which only fires startAnim() on the
+  // transitions it cares about). Purple while parked and not ramping, comet
+  // while ramping, off once volume mode is exited entirely.
+  if (volumeMode) {
+    if (!volumeActive && anim != ANIM_VOL_WAIT) startAnim(ANIM_VOL_WAIT);
+  } else if (anim == ANIM_VOL_UP || anim == ANIM_VOL_DN || anim == ANIM_VOL_WAIT) {
     anim = ANIM_NONE;
     stripOff();
   }
 
-  // frame rendering, animation has priority over progress bar
+  // A gesture animation always wins for its ~360ms; the bar resumes underneath.
   if (millis() - lastFrame >= FRAME_MS) {
     lastFrame = millis();
-    if (anim != ANIM_NONE) {
-      renderAnim();
-    }
-    else if (amsFound) {
-      renderProgress();
-    }
+    if (anim != ANIM_NONE) renderAnim();
+    else if (amsFound)     renderProgress();
   }
 
-  // AMS retry block
   if (authDone && !amsFound && amsTries < 5 && millis() >= amsNextTry) {
     amsTries++;
     amsNextTry = millis() + 2000;
-    setupAMS();  // try again
+    setupAMS();
   }
 
-  handleFlash();  // checks if the pause led has been on for more than 150ms
+  handleFlash();
 
-  // volume mode gets a wider far edge so an overshoot doesn't end the dwell, but never past the wall
-  float zoneLimit = zoneMax;
-  if (volumeActive) {
-    zoneLimit = zoneMax + VOLUME_DISTANCE_INCREASE;
-    if (isCalibrated && zoneLimit > calibRefDist - CALIBRATION_TOLERANCE) {
-      zoneLimit = calibRefDist - CALIBRATION_TOLERANCE;
-    }
-  }
-  bool inZone = (current >= DETECT_MIN && current <= zoneLimit);
+  bool inZone = (current >= DETECT_MIN && current <= zoneMax);
 
-  if (inZone) {
-    outOfRangeSince = 0;
-  }
-  else if (outOfRangeSince == 0) {  // if just out of range, start the timer
-    outOfRangeSince = millis();
-  }
-  bool handConfirmedGone = (!inZone && outOfRangeSince != 0 && millis() - outOfRangeSince >= OUT_OF_RANGE_MS);
+  if (inZone) outOfRangeSince = 0;
+  else if (outOfRangeSince == 0) outOfRangeSince = millis();
+  bool handConfirmedGone = (!inZone && outOfRangeSince != 0 &&
+                            millis() - outOfRangeSince >= OUT_OF_RANGE_MS);
 
-  if (inZone && !handInZone) {  // hand just in zone
+  if (inZone && !handInZone) {
     handInZone = true;
+    handEntryTime = millis();
     holdFired = false;
-    if (volumeActive) {  // armed by a triple pass, now going live - restart the grace and re-anchor
-      volumeEnteredAt = millis();
-      volumeCenter = -1;
-    }
-    stillSince = millis();
-    prevDistance = current;
-    lastSampleDistance = current;
-    lastSampleTime = millis();
+    zoneEntryDist = current;
+    lastInZoneDist = current;
   }
 
-  else if (handConfirmedGone && handInZone) {  // hand just left
+  else if (handConfirmedGone && handInZone) {
     handInZone = false;
     outOfRangeSince = 0;
-    bool wasAdjusting = volumeActive;  // the dwell that just ended was a volume adjustment
-    volumeActive = false;
 
-    // only a plain pass counts, not a hold or a volume adjustment
-    if (!holdFired && !wasAdjusting) {
-      if (passCount == 0 || millis() - firstPassExitTime > MULTI_PASS_WINDOW) {
-        passCount = 1;  // first pass, or the previous run timed out
+    if (volumeMode) {
+      // Leaving the zone always exits volume mode - swipe or no swipe, ramp
+      // running or not. This is the only way out now; there's no hold-to-exit.
+      volumeMode = false;
+      volumeActive = false;
+    } else if (!holdFired) {
+      // A dwell that reached HOLD_TIME was a plain play/pause hold, not a
+      // pass - only handle it here if the hand left before that.
+      if (passCount == 0) {
+        passCount = 1;
         firstPassExitTime = millis();
-      }
-      else {
-        passCount++;
-        // three inside the window = volume mode. -1 centre means "not anchored yet"
-        if (passCount >= 3) {
-          passCount = 0;
-          volumeActive = true;
-          volumeEnteredAt = millis();
-          volumeCenter = -1;
-          startAnim(ANIM_PULSE);
-        }
+      } else if (passCount == 1 && millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW) {
+        sendMediaKey(KEY_PREV, "PREV");
+        startAnim(ANIM_PREV);
+        passCount = 0;
+      } else {
+        passCount = 1;
+        firstPassExitTime = millis();
       }
     }
   }
 
   else if (inZone && handInZone) {
-    // if there's movement, update stillSince
-    if (current - prevDistance > MOVE_NOISE || prevDistance - current > MOVE_NOISE) {
-      stillSince = millis();
-      prevDistance = current;
+    lastInZoneDist = current;
+
+    // In volume mode, ramping is level-triggered off the fixed entry point,
+    // not a one-off gesture: above centre by VOLUME_DEADZONE_CM it ramps up,
+    // below it ramps down, and inside the dead zone it pauses - re-checked
+    // every loop for as long as the hand is held there. startAnim() only
+    // fires on a transition (ramp starting or reversing), not every loop,
+    // since the animations are looping ones and restarting them each frame
+    // would freeze them at frame zero.
+    if (volumeMode) {
+      float delta = lastInZoneDist - zoneEntryDist;
+      bool up   = delta >= VOLUME_DEADZONE_CM;
+      bool down = delta <= -VOLUME_DEADZONE_CM;
+
+      if (up || down) {
+        bool directionChanged = !volumeActive || (volumeUp != up);
+        volumeUp = up;
+        volumeActive = true;
+        if (directionChanged) {
+          lastVolumeTick = 0;
+          startAnim(volumeUp ? ANIM_VOL_UP : ANIM_VOL_DN);
+        }
+      } else {
+        volumeActive = false;
+      }
     }
 
-    // speed detection
-    unsigned long dt = millis() - lastSampleTime;
-    if (dt > SPEED_WINDOW_MS) {
-      speed = ((current - lastSampleDistance) / dt) * 1000.0;  // hand speed in cm/s, measured from change in distance since over the last 100ms divided by change in time
-      lastSampleDistance = current;  // reseed only if speed has been calculated
-      lastSampleTime = millis();
-    }
-
-    if (!volumeActive) {
-      // one decision, taken the moment the hand goes still. holdFired also stops this dwell counting
-      // as a next/prev pass
-      if (!holdFired && millis() - stillSince >= HOLD_TIME) {
-        holdFired = true;
-        resetGestureState();
+    if (!holdFired && millis() - handEntryTime >= HOLD_TIME) {
+      holdFired = true;
+      // A pass right before this hold is the "skip, then pause" combo that
+      // enters volume mode. A hold with nothing preceding it is a plain
+      // play/pause instead. (volumeMode is always false by the time a fresh
+      // hold can fire here - leaving the zone already cleared it - so there's
+      // no "hold while in volume mode" case left to handle.)
+      bool comboPending = (passCount == 1 &&
+                            millis() - firstPassExitTime <= DOUBLE_PASS_WINDOW);
+      resetGestureState();
+      if (comboPending) {
+        volumeMode = true;
+        // Fresh baseline right as the mode starts, so the swipe check above
+        // measures movement from here, not from wherever the hand happened
+        // to be when it entered the zone for this dwell.
+        zoneEntryDist = current;
+        lastInZoneDist = current;
+      } else {
         sendMediaKey(KEY_PLAY_PAUSE, "PLAY/PAUSE");
         startAnim(ANIM_PULSE);
         flashLed(ledPause);
       }
     }
-    // volume block
-    else {
-      if (speed > EXIT_SPEED) {  // pulled away rather than adjusting
-        volumeActive = false;
-        resetGestureState();
-      }
-      // anchor the centre wherever the hand settles, not where it crossed the boundary
-      else if (volumeCenter < 0) {
-        if (millis() - volumeEnteredAt >= VOLUME_GRACE_MS) {
-          volumeCenter = current;
-          // keep the centre off both ends so up and down stay reachable
-          float low = DETECT_MIN + VOLUME_DEAD + 1.0;
-          float high = zoneMax - VOLUME_DEAD - 1.0;
-          if (volumeCenter < low) {
-            volumeCenter = low;
-          }
-          if (volumeCenter > high) {
-            volumeCenter = high;
-          }
-        }
-      }
-      else if (millis() - lastVolumeStep >= VOL_STEP_MS) {
-        if (current > volumeCenter + VOLUME_DEAD) {
-          sendMediaKey(KEY_VOL_UP, "VOL+");
-          startAnim(ANIM_VOL_UP);
-          lastVolumeStep = millis();
-        }
-        else if (current < volumeCenter - VOLUME_DEAD) {
-          sendMediaKey(KEY_VOL_DOWN, "VOL-");
-          startAnim(ANIM_VOL_DN);
-          lastVolumeStep = millis();
-        }
-        // inside the volume dead zone so holding still near the split doesnt' change anything
-      }
-    }
   }
 
-  // both wait out the window, since a second pass looks like the start of a third
-  if (!handInZone && passCount > 0 && millis() - firstPassExitTime > MULTI_PASS_WINDOW) {
-    if (passCount == 1) {
-      sendMediaKey(KEY_NEXT, "NEXT");
-      startAnim(ANIM_NEXT);
-    }
-    else {
-      sendMediaKey(KEY_PREV, "PREV");
-      startAnim(ANIM_PREV);
-    }
+  if (!handInZone && passCount == 1 && millis() - firstPassExitTime > DOUBLE_PASS_WINDOW) {
+    sendMediaKey(KEY_NEXT, "NEXT");
+    startAnim(ANIM_NEXT);
     passCount = 0;
   }
 }
