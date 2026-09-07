@@ -17,16 +17,19 @@ Adafruit_VL53L0X lox = Adafruit_VL53L0X();
   #define I2C_SDA 16
   #define I2C_SCL 17
   const int ledPause = 27; // status LED
+  #define BATTERY_PIN 0   // TODO: confirm against PCB v2 schematic
 #elif BOARD == 1
   #define LED_PIN 15
   #define I2C_SDA 17
   #define I2C_SCL 16
   const int ledPause = 27;
+  #define BATTERY_PIN 0   // TODO: confirm against PCB v1 schematic
 #else
   #define LED_PIN 18
   #define I2C_SDA 21
   #define I2C_SCL 22
   const int ledPause = 4;
+  #define BATTERY_PIN 36   // perfboard - wire divider output here
 #endif
 
 #define NUMPIXELS 8
@@ -460,6 +463,54 @@ void resetGestureState() {
   volumeMode = false;
 }
 
+// Adjust to match your actual divider resistors (e.g. two 100k = 2.0x).
+// This scales the ADC pin voltage back up to the true battery voltage.
+const float BATTERY_DIVIDER_RATIO = 2.0;
+
+// Battery drains slowly - no need to hammer the ADC or spam BLE notifies.
+const unsigned long BATTERY_CHECK_INTERVAL = 60000; // 1 minute
+unsigned long lastBatteryCheck = 0;
+uint8_t lastBatteryPercent = 100;
+
+// A single-cell LiPo's voltage sags non-linearly as it discharges - a straight
+// mV-to-percent line overstates charge near empty and understates it near full.
+// This is a commonly used at-rest discharge curve, interpolated between points.
+struct BatteryPoint { float voltage; uint8_t percent; };
+const BatteryPoint BATTERY_CURVE[] = {
+  {4.20, 100}, {4.15, 95}, {4.11, 90}, {4.08, 85}, {4.02, 80},
+  {3.98, 75},  {3.95, 70}, {3.91, 65}, {3.87, 60}, {3.85, 55},
+  {3.84, 50},  {3.82, 45}, {3.80, 40}, {3.79, 35}, {3.77, 30},
+  {3.75, 25},  {3.73, 20}, {3.71, 15}, {3.69, 10}, {3.61, 5},
+  {3.27, 0}
+};
+const int BATTERY_CURVE_LEN = sizeof(BATTERY_CURVE) / sizeof(BATTERY_CURVE[0]);
+
+uint8_t voltageToPercent(float v) {
+  if (v >= BATTERY_CURVE[0].voltage) return 100;
+  if (v <= BATTERY_CURVE[BATTERY_CURVE_LEN - 1].voltage) return 0;
+  for (int i = 0; i < BATTERY_CURVE_LEN - 1; i++) {
+    if (v <= BATTERY_CURVE[i].voltage && v >= BATTERY_CURVE[i + 1].voltage) {
+      float span = BATTERY_CURVE[i].voltage - BATTERY_CURVE[i + 1].voltage;
+      float frac = (v - BATTERY_CURVE[i + 1].voltage) / span;
+      return BATTERY_CURVE[i + 1].percent +
+             (uint8_t)(frac * (BATTERY_CURVE[i].percent - BATTERY_CURVE[i + 1].percent));
+    }
+  }
+  return 0;
+}
+
+// analogReadMilliVolts() applies the ESP32's factory ADC calibration, which is
+// far more accurate than converting a raw analogRead() count by hand.
+// Averaged over a few samples to smooth out ADC jitter.
+uint8_t readBatteryPercent() {
+  const int SAMPLES = 8;
+  uint32_t total = 0;
+  for (int i = 0; i < SAMPLES; i++) total += analogReadMilliVolts(BATTERY_PIN);
+  float pinVoltage = (total / (float)SAMPLES) / 1000.0f;
+  float batteryVoltage = pinVoltage * BATTERY_DIVIDER_RATIO;
+  return voltageToPercent(batteryVoltage);
+}
+
 void setup() {
   // Serial first: with Serial.begin() after lox.begin(), a sensor that doesn't
   // answer left the board dark with no clue why.
@@ -480,7 +531,9 @@ void setup() {
   hid->setPnp(0x02, 0x303A, 0x0001, 0x0100);
   hid->setHidInfo(0x00, 0x01);
   hid->setReportMap(reportMap, sizeof(reportMap));
-  hid->setBatteryLevel(100);
+  lastBatteryPercent = readBatteryPercent();
+  hid->setBatteryLevel(lastBatteryPercent);
+  Serial.printf("Battery: %d%%\n", lastBatteryPercent);
   server->start();
 
   // GENERIC_HID, not HID_KEYBOARD - see the report map note above.
@@ -563,6 +616,16 @@ void loop() {
     Serial.print(isCalibrated ? "  [calibrated]" : "  [default]");
     Serial.print(bleConnected ? "" : "  (not connected)");
     Serial.println();
+  }
+
+  if (millis() - lastBatteryCheck >= BATTERY_CHECK_INTERVAL) {
+    lastBatteryCheck = millis();
+    uint8_t pct = readBatteryPercent();
+    if (pct != lastBatteryPercent) {
+      lastBatteryPercent = pct;
+      hid->setBatteryLevel(pct);
+      Serial.printf("Battery: %d%%\n", pct);
+    }
   }
 
   if (!bleConnected) return;
